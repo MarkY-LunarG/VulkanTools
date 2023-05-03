@@ -1,0 +1,22 @@
+{
+    "file_format_version" : "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_LUNARG_memory_tracker",
+        "type": "GLOBAL",
+        "library_path": "@RELATIVE_LAYER_BINARY@",
+        "api_version": "@VK_VERSION@",
+        "implementation_version": "1",
+        "description": "LunarG memory tracking layer",
+        "url": "https://vulkan.lunarg.com/doc/sdk/latest/windows/memory_tracker_layer.html",
+        "platforms": [ "WINDOWS", "LINUX", "ANDROID" ],
+        "device_extensions": [
+            {
+                "name": "VK_EXT_tooling_info",
+                "spec_version": "1",
+                "entrypoints": [
+                    "vkGetPhysicalDeviceToolPropertiesEXT"
+                ]
+            }
+        ]
+    }
+}
