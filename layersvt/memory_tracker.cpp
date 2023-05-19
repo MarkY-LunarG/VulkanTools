@@ -55,6 +55,7 @@ struct InstanceExtensionsEnabled {
     bool core_1_2 = false;
     bool core_1_3 = false;
     bool KHR_device_group_create = false;
+    bool KHR_external_mem_caps = false;
     bool KHR_get_phys_dev_props2 = false;
 };
 struct InstanceMapStruct {
@@ -67,7 +68,10 @@ struct DeviceExtensions {
     bool core_1_1 = false;
     bool core_1_2 = false;
     bool core_1_3 = false;
+    bool KHR_sync2 = false;
+    bool KHR_external_mem_fd = false;
     bool EXT_mem_budget = false;
+    bool ANDROID_ext_mem_hw_buf = false;
 };
 struct MemoryHeapWithBudget {
     VkDeviceSize size;
@@ -98,16 +102,58 @@ struct DeviceMapStruct {
 };
 static std::unordered_map<VkDevice, DeviceMapStruct *> g_device_map;
 
+enum AdditionalBufferValidFlags {
+    ADD_BUFFER_VALID_NONE = 0x00000000,
+    ADD_BUFFER_VALID_OPAQUE_CAPTURE = 0x00000001,
+    ADD_BUFFER_VALID_EXTERNAL_MEM_HANDLE_FLAGS = 0x00000002,
+    ADD_BUFFER_VALID_DEVICE_ADDRESS = 0x00000004,
+};
+
+struct AdditionalBufferStruct {
+    uint32_t flags;
+    uint64_t opaque_capture_address;                               // ADD_BUFFER_VALID_OPAQUE_CAPTURE
+    VkExternalMemoryHandleTypeFlags external_memory_handle_flags;  // ADD_BUFFER_VALID_EXTERNAL_MEM_HANDLE_FLAGS
+    VkDeviceAddress device_address;                                // ADD_BUFFER_VALID_DEVICE_ADDRESS
+};
+
 struct BufferMapStruct {
     VkDevice device;
     VkBufferCreateInfo create_info;
+    AdditionalBufferStruct additional_info;
     VkMemoryRequirements memory_reqs;
 };
 static std::unordered_map<VkBuffer, BufferMapStruct *> g_buffer_map;
 
+enum AdditionalImageValidFlags {
+    ADD_IMAGE_VALID_NONE = 0x00000000,
+    ADD_IMAGE_VALID_EXTERNAL_MEM_HANDLE_FLAGS = 0x00000001,
+    ADD_IMAGE_VALID_FORMAT_LIST = 0x00000002,
+    ADD_IMAGE_VALID_STENCIL_USAGE = 0x00000004,
+    ADD_IMAGE_VALID_SWAPCHAIN = 0x00000008,
+    ADD_IMAGE_VALID_COMPRESSION_CONTROL = 0x000000010,
+    ADD_IMAGE_VALID_DRM_FORMAT_MOD_EXPLICIT = 0x000000020,
+    ADD_IMAGE_VALID_DRM_FORMAT_MOD_LIST = 0x000000040,
+    ADD_IMAGE_VALID_EXTERNAL_FORMAT_ANDROID = 0x000000080,
+};
+
+struct AdditionalImageStruct {
+    uint32_t flags;
+    VkExternalMemoryHandleTypeFlags external_memory_handle_flags;       // ADD_IMAGE_VALID_EXTERNAL_MEM_HANDLE_FLAGS
+    std::vector<VkFormat> format_list;                                  // ADD_IMAGE_VALID_FORMAT_LIST
+    VkImageUsageFlags stencil_usage;                                    // ADD_IMAGE_VALID_STENCIL_USAGE
+    VkSwapchainKHR swapchain;                                           // ADD_IMAGE_VALID_SWAPCHAIN
+    VkImageCompressionFlagsEXT image_compress_flags;                    // ADD_IMAGE_VALID_COMPRESSION_CONTROL
+    std::vector<VkImageCompressionFixedRateFlagsEXT> fixed_rate_flags;  // ADD_IMAGE_VALID_COMPRESSION_CONTROL
+    uint64_t drm_format_modifier;                                       // ADD_IMAGE_VALID_DRM_FORMAT_MOD_EXPLICIT
+    std::vector<VkSubresourceLayout> plane_layouts;                     // ADD_IMAGE_VALID_DRM_FORMAT_MOD_EXPLICIT
+    std::vector<uint64_t> drm_format_modifiers;                         // ADD_IMAGE_VALID_DRM_FORMAT_MOD_LIST
+    uint64_t external_android_format;                                   // ADD_IMAGE_VALID_EXTERNAL_FORMAT_ANDROID
+};
+
 struct ImageMapStruct {
     VkDevice device;
     VkImageCreateInfo create_info;
+    AdditionalImageStruct additional_info;
     VkMemoryRequirements memory_reqs;
 };
 static std::unordered_map<VkImage, ImageMapStruct *> g_image_map;
@@ -120,9 +166,41 @@ struct ImageMemoryStruct {
     VkImage image;
     VkDeviceSize offset;
 };
+
+enum AdditionalMemoryValidFlags {
+    ADD_MEM_VALID_NONE = 0x00000000,
+    ADD_MEM_VALID_EXTERNAL_MEM_HANDLE_FLAGS = 0x00000001,
+    ADD_MEM_VALID_DEDICATED_ALLOC = 0x00000002,
+    ADD_MEM_VALID_ALLOCATE_FLAG_INFO = 0x00000004,
+    ADD_MEM_VALID_OPAQUE_CAPTURE_ADDRESS = 0x00000008,
+    ADD_MEM_VALID_EXTERNAL_MEM_FD = 0x00000010,
+    ADD_MEM_VALID_IMPORT_HOST_POINTER = 0x00000020,
+    ADD_MEM_VALID_PRIORITY = 0x00000040,
+    ADD_MEM_VALID_ANDROID_HARDWARE_BUFFER = 0x00000080,
+};
+
+struct AdditionalMemoryStruct {
+    uint32_t flags;
+    VkExternalMemoryHandleTypeFlags external_memory_handle_flags;    // ADD_MEM_VALID_EXTERNAL_MEM_HANDLE_FLAGS
+    VkImage dedicated_image;                                         // ADD_MEM_VALID_DEDICATED_ALLOC
+    VkBuffer dedicated_buffer;                                       // ADD_MEM_VALID_DEDICATED_ALLOC
+    VkMemoryAllocateFlags memory_alloc_flags;                        // ADD_MEM_VALID_ALLOCATE_FLAG_INFO
+    uint32_t memory_alloc_device_mask;                               // ADD_MEM_VALID_ALLOCATE_FLAG_INFO
+    uint64_t opaque_capture_address;                                 // ADD_MEM_VALID_OPAQUE_CAPTURE_ADDRESS
+    VkExternalMemoryHandleTypeFlagBits ext_memory_fd_handle_type;    // ADD_MEM_VALID_EXTERNAL_MEM_FD
+    int64_t ext_memory_fd;                                           // ADD_MEM_VALID_EXTERNAL_MEM_FD
+    VkExternalMemoryHandleTypeFlagBits import_host_ptr_handle_type;  // ADD_MEM_VALID_IMPORT_HOST_POINTER
+    void *import_host_ptr;                                           // ADD_MEM_VALID_IMPORT_HOST_POINTER
+    float memory_priority;                                           // ADD_MEM_VALID_PRIORITY
+#ifdef ANDROID
+    AHardwareBuffer *android_hw_buffer;  // ADD_MEM_VALID_ANDROID_HARDWARE_BUFFER
+#endif
+};
+
 struct MemoryMapStruct {
     VkDevice device;
     VkMemoryAllocateInfo alloc_info;
+    AdditionalMemoryStruct additional_info;
     std::vector<BufferMemoryStruct> buffers;
     std::vector<ImageMemoryStruct> images;
 };
@@ -254,110 +332,240 @@ void DumpMemory(DeviceMapStruct *device_map_data, PhysDeviceMapStruct *phys_dev_
     WRITE_LOG_MESSAGE("Device : %s", phys_dev_data_entry->props.deviceName);
 
     for (uint32_t heap = 0; heap < phys_dev_data_entry->memory_props.memoryHeapCount; ++heap) {
-        WRITE_LOG_MESSAGE("  --------------Heap %02d----------------", heap);
-        WRITE_LOG_MESSAGE("  |    Total Size %14" PRIu64 "       |", phys_dev_data_entry->memory_props.memoryHeaps[heap].size);
+        WRITE_LOG_MESSAGE("  -----Heap %02d-----------------------------", heap);
+        WRITE_LOG_MESSAGE("  |    Total Size %14" PRIu64 "           |", phys_dev_data_entry->memory_props.memoryHeaps[heap].size);
         if (supports_memory_budget) {
-            WRITE_LOG_MESSAGE("  |    Budget     %14" PRIu64 "       |",
+            WRITE_LOG_MESSAGE("  |    Budget     %14" PRIu64 "           |",
                               phys_dev_data_entry->memory_props.memoryHeaps[heap].budget);
-            WRITE_LOG_MESSAGE("  |    Usage      %14" PRIu64 "       |", phys_dev_data_entry->memory_props.memoryHeaps[heap].usage);
+            WRITE_LOG_MESSAGE("  |    Usage      %14" PRIu64 "           |",
+                              phys_dev_data_entry->memory_props.memoryHeaps[heap].usage);
         }
-        WRITE_LOG_MESSAGE("  |    Flags                           |");
+        WRITE_LOG_MESSAGE("  |    Flags                               |");
         if (phys_dev_data_entry->memory_props.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-            WRITE_LOG_MESSAGE("  |      DEVICE_LOCAL                  |");
+            WRITE_LOG_MESSAGE("  |      DEVICE_LOCAL                      |");
         }
         if (phys_dev_data_entry->memory_props.memoryHeaps[heap].flags & VK_MEMORY_HEAP_MULTI_INSTANCE_BIT) {
-            WRITE_LOG_MESSAGE("  |      MULTI_INSTANCE                |");
+            WRITE_LOG_MESSAGE("  |      MULTI_INSTANCE                    |");
         }
         for (uint32_t type = 0; type < phys_dev_data_entry->memory_props.memoryTypeCount; ++type) {
             if (heap == phys_dev_data_entry->memory_props.memoryTypes[type].heapIndex) {
-                WRITE_LOG_MESSAGE("  |                                    |");
-                WRITE_LOG_MESSAGE("  |   ---Type %02d---                    |", type);
-                WRITE_LOG_MESSAGE("  |     Flags                          |");
+                WRITE_LOG_MESSAGE("  |                                        |");
+                WRITE_LOG_MESSAGE("  |   ---Type %02d---                        |", type);
+                WRITE_LOG_MESSAGE("  |     Flags                              |");
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags == 0) {
-                    WRITE_LOG_MESSAGE("  |        <No Flags>                  |");
+                    WRITE_LOG_MESSAGE("  |        <No Flags>                      |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
-                    WRITE_LOG_MESSAGE("  |        DEVICE_LOCAL                |");
+                    WRITE_LOG_MESSAGE("  |        DEVICE_LOCAL                    |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-                    WRITE_LOG_MESSAGE("  |        HOST_VISIBLE                |");
+                    WRITE_LOG_MESSAGE("  |        HOST_VISIBLE                    |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
-                    WRITE_LOG_MESSAGE("  |        HOST_COHERENT               |");
+                    WRITE_LOG_MESSAGE("  |        HOST_COHERENT                   |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) {
-                    WRITE_LOG_MESSAGE("  |        HOST_CACHED                 |");
+                    WRITE_LOG_MESSAGE("  |        HOST_CACHED                     |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) {
-                    WRITE_LOG_MESSAGE("  |        LAZY_ALLOC                  |");
+                    WRITE_LOG_MESSAGE("  |        LAZY_ALLOC                      |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_PROTECTED_BIT) {
-                    WRITE_LOG_MESSAGE("  |        PROTECTED                   |");
+                    WRITE_LOG_MESSAGE("  |        PROTECTED                       |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags &
                     VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD) {
-                    WRITE_LOG_MESSAGE("  |        DEV_COHERENT_AMD            |");
+                    WRITE_LOG_MESSAGE("  |        DEV_COHERENT_AMD                |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags &
                     VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD) {
-                    WRITE_LOG_MESSAGE("  |        DEV_UNCACHED_AMD            |");
+                    WRITE_LOG_MESSAGE("  |        DEV_UNCACHED_AMD                |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_RDMA_CAPABLE_BIT_NV) {
-                    WRITE_LOG_MESSAGE("  |        RDMA_CAPABLE_NV             |");
+                    WRITE_LOG_MESSAGE("  |        RDMA_CAPABLE_NV                 |");
                 }
                 bool printed_alloc = false;
                 for (auto &memory_data : g_memory_map) {
                     if (memory_data.second->alloc_info.memoryTypeIndex == type) {
-                        WRITE_LOG_MESSAGE("  |                                    |");
+                        WRITE_LOG_MESSAGE("  |                                        |");
                         if (!printed_alloc) {
-                            WRITE_LOG_MESSAGE("  |     Allocated Memory               |");
-                            WRITE_LOG_MESSAGE("  |     -------------------            |");
+                            WRITE_LOG_MESSAGE("  |     Allocated Memory                   |");
+                            WRITE_LOG_MESSAGE("  |     -------------------                |");
                             printed_alloc = true;
                         }
-                        WRITE_LOG_MESSAGE("  |        VkMemory %013" PRIx64 "      |",
+                        WRITE_LOG_MESSAGE("  |        VkMemory %14" PRIx64 "         |",
                                           reinterpret_cast<uint64_t>(memory_data.first));
-                        WRITE_LOG_MESSAGE("  |          Size %10" PRIu64 "           |",
+                        WRITE_LOG_MESSAGE("  |          Size %10" PRIu64 "               |",
                                           memory_data.second->alloc_info.allocationSize);
-                        WRITE_LOG_MESSAGE("  |                                    |");
+
+                        if (memory_data.second->additional_info.flags) {
+                            if (memory_data.second->additional_info.flags & ADD_MEM_VALID_EXTERNAL_MEM_HANDLE_FLAGS) {
+                                WRITE_LOG_MESSAGE("  |          Ext_Mem_Flags 0x%08x     |",
+                                                  memory_data.second->additional_info.external_memory_handle_flags);
+                            }
+                            if (memory_data.second->additional_info.flags & ADD_MEM_VALID_DEDICATED_ALLOC) {
+                                if (VK_NULL_HANDLE != memory_data.second->additional_info.dedicated_image) {
+                                    WRITE_LOG_MESSAGE(
+                                        "  |          Dedicated Img %14" PRIx64 "  |",
+                                        reinterpret_cast<uint64_t>(memory_data.second->additional_info.dedicated_image));
+                                }
+                                if (VK_NULL_HANDLE != memory_data.second->additional_info.dedicated_buffer) {
+                                    WRITE_LOG_MESSAGE(
+                                        "  |          Dedicated Buf %14" PRIx64 "  |",
+                                        reinterpret_cast<uint64_t>(memory_data.second->additional_info.dedicated_buffer));
+                                }
+                            }
+                            if (memory_data.second->additional_info.flags & ADD_MEM_VALID_OPAQUE_CAPTURE_ADDRESS) {
+                                WRITE_LOG_MESSAGE("  |          Opaque Capt Addr %14" PRIx64 "   |",
+                                                  memory_data.second->additional_info.opaque_capture_address);
+                            }
+                            if (memory_data.second->additional_info.flags & ADD_MEM_VALID_EXTERNAL_MEM_FD) {
+                                WRITE_LOG_MESSAGE("  |          Extern Mem Fd HandleType 0x%08x   |",
+                                                  memory_data.second->additional_info.ext_memory_fd_handle_type);
+                                WRITE_LOG_MESSAGE("  |          Extern Mem Fd %14" PRIx64 "   |",
+                                                  memory_data.second->additional_info.ext_memory_fd);
+                            }
+                            if (memory_data.second->additional_info.flags & ADD_MEM_VALID_IMPORT_HOST_POINTER) {
+                                WRITE_LOG_MESSAGE("  |          Import Host Ptr HandleType 0x%08x   |",
+                                                  memory_data.second->additional_info.import_host_ptr_handle_type);
+                                WRITE_LOG_MESSAGE("  |          Import Host Ptr %p   |",
+                                                  memory_data.second->additional_info.import_host_ptr);
+                            }
+                            if (memory_data.second->additional_info.flags & ADD_MEM_VALID_PRIORITY) {
+                                WRITE_LOG_MESSAGE("  |          Priority %10f              |",
+                                                  memory_data.second->additional_info.memory_priority);
+                            }
+                            if (memory_data.second->additional_info.flags & ADD_MEM_VALID_ANDROID_HARDWARE_BUFFER) {
+#ifdef ANDROID
+                                WRITE_LOG_MESSAGE("  |          AHardwareBuffer %p   |",
+                                                  memory_data.second->additional_info.android_hw_buffer);
+#endif
+                            }
+                        }
+                        WRITE_LOG_MESSAGE("  |                                        |");
                         bool printed_buffers = false;
                         for (auto &buffer : memory_data.second->buffers) {
                             if (!printed_buffers) {
-                                WRITE_LOG_MESSAGE("  |          Bound Buffers             |");
-                                WRITE_LOG_MESSAGE("  |          .....................     |");
+                                WRITE_LOG_MESSAGE("  |          Bound Buffers                 |");
+                                WRITE_LOG_MESSAGE("  |          .....................         |");
                                 printed_buffers = true;
                             }
-                            WRITE_LOG_MESSAGE("  |             VkBuffer %013" PRIx64 " |",
+                            WRITE_LOG_MESSAGE("  |             VkBuffer %14" PRIx64 "    |",
                                               reinterpret_cast<uint64_t>(buffer.buffer));
-                            WRITE_LOG_MESSAGE("  |                 Size   %10" PRIu64 "  |",
+                            WRITE_LOG_MESSAGE("  |                 Size   %14" PRIu64 "  |",
                                               g_buffer_map[buffer.buffer]->memory_reqs.size);
-                            WRITE_LOG_MESSAGE("  |                 Align  %10" PRIu64 "  |",
+                            WRITE_LOG_MESSAGE("  |                 Align  %14" PRIu64 "  |",
                                               g_buffer_map[buffer.buffer]->memory_reqs.alignment);
-                            WRITE_LOG_MESSAGE("  |                 Offset %10" PRIu64 "  |", buffer.offset);
-                            WRITE_LOG_MESSAGE("  |                 Flags  0x%08x  |",
+                            WRITE_LOG_MESSAGE("  |                 Offset %14" PRIu64 "  |", buffer.offset);
+                            WRITE_LOG_MESSAGE("  |                 Flags      0x%08x  |",
                                               g_buffer_map[buffer.buffer]->memory_reqs.memoryTypeBits);
+                            if (g_buffer_map[buffer.buffer]->additional_info.flags) {
+                                if (g_buffer_map[buffer.buffer]->additional_info.flags & ADD_BUFFER_VALID_OPAQUE_CAPTURE) {
+                                    WRITE_LOG_MESSAGE("  |                 Opaque Capt Addr %14" PRIu64 " |",
+                                                      g_buffer_map[buffer.buffer]->additional_info.opaque_capture_address);
+                                }
+                                if (g_buffer_map[buffer.buffer]->additional_info.flags &
+                                    ADD_BUFFER_VALID_EXTERNAL_MEM_HANDLE_FLAGS) {
+                                    WRITE_LOG_MESSAGE("  |                 Ext Mem Flags  0x%08x  |",
+                                                      g_buffer_map[buffer.buffer]->additional_info.external_memory_handle_flags);
+                                }
+                                if (g_buffer_map[buffer.buffer]->additional_info.flags & ADD_BUFFER_VALID_DEVICE_ADDRESS) {
+                                    WRITE_LOG_MESSAGE("  |                 Device Addr %14" PRIx64 " |",
+                                                      g_buffer_map[buffer.buffer]->additional_info.device_address);
+                                }
+                            }
                         }
                         bool printed_images = false;
                         for (auto &image : memory_data.second->images) {
                             if (!printed_images) {
-                                WRITE_LOG_MESSAGE("  |          Bound Images              |");
-                                WRITE_LOG_MESSAGE("  |          .....................     |");
+                                WRITE_LOG_MESSAGE("  |          Bound Images                  |");
+                                WRITE_LOG_MESSAGE("  |          .....................         |");
                                 printed_images = true;
                             }
-                            WRITE_LOG_MESSAGE("  |             VkImage %013" PRIx64 "  |", reinterpret_cast<uint64_t>(image.image));
-                            WRITE_LOG_MESSAGE("  |                 Size   %10" PRIu64 "  |",
+                            WRITE_LOG_MESSAGE("  |             VkImage %14" PRIx64 "     |",
+                                              reinterpret_cast<uint64_t>(image.image));
+                            WRITE_LOG_MESSAGE("  |                 Size   %14" PRIu64 "  |",
                                               g_image_map[image.image]->memory_reqs.size);
-                            WRITE_LOG_MESSAGE("  |                 Align  %10" PRIu64 "  |",
+                            WRITE_LOG_MESSAGE("  |                 Align  %14" PRIu64 "  |",
                                               g_image_map[image.image]->memory_reqs.alignment);
-                            WRITE_LOG_MESSAGE("  |                 Offset %10" PRIu64 "  |", image.offset);
-                            WRITE_LOG_MESSAGE("  |                 Flags  0x%08x  |",
+                            WRITE_LOG_MESSAGE("  |                 Offset %14" PRIu64 "  |", image.offset);
+                            WRITE_LOG_MESSAGE("  |                 Flags      0x%08x  |",
                                               g_image_map[image.image]->memory_reqs.memoryTypeBits);
+
+                            if (g_image_map[image.image]->additional_info.flags) {
+                                if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_EXTERNAL_MEM_HANDLE_FLAGS) {
+                                    WRITE_LOG_MESSAGE("  |                 Ext Mem Flags  0x%08x  |",
+                                                      g_image_map[image.image]->additional_info.external_memory_handle_flags);
+                                }
+                                if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_FORMAT_LIST) {
+                                    WRITE_LOG_MESSAGE("  |                 Valid Formats  0x%08x  |",
+                                                      g_image_map[image.image]->additional_info.format_list[0]);
+                                    for (uint32_t i = 1;
+                                         i < static_cast<uint32_t>(g_image_map[image.image]->additional_info.format_list.size());
+                                         ++i) {
+                                        WRITE_LOG_MESSAGE("  |                                0x%08x  |",
+                                                          g_image_map[image.image]->additional_info.format_list[i]);
+                                    }
+                                }
+                                if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_STENCIL_USAGE) {
+                                    WRITE_LOG_MESSAGE("  |                 Stencil Flags  0x%08x  |",
+                                                      g_image_map[image.image]->additional_info.stencil_usage);
+                                }
+                                if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_SWAPCHAIN) {
+                                    WRITE_LOG_MESSAGE(
+                                        "  |                 Swapchain %14" PRIu64 " |",
+                                        reinterpret_cast<uint64_t>(g_image_map[image.image]->additional_info.swapchain));
+                                }
+                                if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_COMPRESSION_CONTROL) {
+                                    WRITE_LOG_MESSAGE("  |                 Compress Flags    0x%08x |",
+                                                      g_image_map[image.image]->additional_info.image_compress_flags);
+                                    WRITE_LOG_MESSAGE("  |                 Fixed Rate Flags  0x%08x |",
+                                                      g_image_map[image.image]->additional_info.fixed_rate_flags[0]);
+                                    for (uint32_t i = 1; i < g_image_map[image.image]->additional_info.fixed_rate_flags.size();
+                                         ++i) {
+                                        WRITE_LOG_MESSAGE("  |                                   0x%08x |",
+                                                          g_image_map[image.image]->additional_info.fixed_rate_flags[i]);
+                                    }
+                                }
+                                if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_DRM_FORMAT_MOD_EXPLICIT) {
+                                    WRITE_LOG_MESSAGE("  |                 Drm Format Mod %14" PRIu64 " |",
+                                                      g_image_map[image.image]->additional_info.drm_format_modifier);
+                                    WRITE_LOG_MESSAGE("  |                 Drm Planes                      |");
+                                    for (uint32_t i = 1;
+                                         i < static_cast<uint32_t>(
+                                                 g_image_map[image.image]->additional_info.drm_format_modifiers.size());
+                                         ++i) {
+                                        WRITE_LOG_MESSAGE("  |                           Offs   %14" PRIu64 " |",
+                                                          g_image_map[image.image]->additional_info.plane_layouts[i].offset);
+                                        WRITE_LOG_MESSAGE("  |                           Size   %14" PRIu64 " |",
+                                                          g_image_map[image.image]->additional_info.plane_layouts[i].size);
+                                    }
+                                }
+                                if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_DRM_FORMAT_MOD_LIST) {
+                                    WRITE_LOG_MESSAGE("  |                 Drm Format Mods %14" PRIu64 " |",
+                                                      g_image_map[image.image]->additional_info.drm_format_modifiers[0]);
+                                    for (uint32_t i = 1;
+                                         i < static_cast<uint32_t>(
+                                                 g_image_map[image.image]->additional_info.drm_format_modifiers.size());
+                                         ++i) {
+                                        WRITE_LOG_MESSAGE("  |                                 %14" PRIu64 " |",
+                                                          g_image_map[image.image]->additional_info.drm_format_modifiers[i]);
+                                    }
+                                }
+                                if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_EXTERNAL_FORMAT_ANDROID) {
+#ifdef ANDROID
+                                    WRITE_LOG_MESSAGE("  |                 Ext Android Fmt %14" PRIx64 " |",
+                                                      g_image_map[image.image]->additional_info.external_android_format);
+#endif
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-        WRITE_LOG_MESSAGE("  |                                    |");
-        WRITE_LOG_MESSAGE("  -------------------------------------");
+        WRITE_LOG_MESSAGE("  |                                        |");
+        WRITE_LOG_MESSAGE("  -----------------------------------------");
     }
 }
 
@@ -436,6 +644,9 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo *pCreat
         for (uint32_t ext = 0; ext < pCreateInfo->enabledExtensionCount; ++ext) {
             if (0 == strcmp(pCreateInfo->ppEnabledExtensionNames[ext], VK_KHR_DEVICE_GROUP_CREATION_EXTENSION_NAME)) {
                 instance_map_data->extension_enables.KHR_device_group_create = true;
+            }
+            if (0 == strcmp(pCreateInfo->ppEnabledExtensionNames[ext], VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME)) {
+                instance_map_data->extension_enables.KHR_external_mem_caps = true;
             }
             if (0 == strcmp(pCreateInfo->ppEnabledExtensionNames[ext], VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
                 instance_map_data->extension_enables.KHR_get_phys_dev_props2 = true;
@@ -647,13 +858,35 @@ VKAPI_ATTR VkResult VKAPI_CALL EnumerateDeviceExtensionProperties(VkPhysicalDevi
             }
 
             for (uint32_t prop = 0; prop < *pPropertyCount; ++prop) {
+                if (0 == strcmp(pProperties[prop].extensionName, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME)) {
+                    phys_dev_data_entry->extensions_supported.KHR_sync2 = true;
+                }
+                if (0 == strcmp(pProperties[prop].extensionName, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)) {
+                    phys_dev_data_entry->extensions_supported.KHR_external_mem_fd = true;
+                }
                 if (0 == strcmp(pProperties[prop].extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
                     phys_dev_data_entry->extensions_supported.EXT_mem_budget = true;
                 }
+#ifdef ANDROID
+                if (0 ==
+                    strcmp(pProperties[prop].extensionName, VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME)) {
+                    phys_dev_data_entry->extensions_supported.ANDROID_ext_mem_hw_buf = true;
+                }
+#endif
             }
         }
     }
     return result;
+}
+
+VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceExternalBufferProperties(VkPhysicalDevice physicalDevice,
+                                                                     const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
+                                                                     VkExternalBufferProperties *pExternalBufferProperties) {
+    PhysDeviceMapStruct *phys_dev_data_entry = GetPhysicalDeviceMapEntry(physicalDevice);
+    InstanceMapStruct *instance_data_entry = GetInstanceMapEntry(phys_dev_data_entry->instance);
+    instance_data_entry->dispatch_table->GetPhysicalDeviceExternalBufferProperties(physicalDevice, pExternalBufferInfo,
+                                                                                   pExternalBufferProperties);
+    // TODO
 }
 
 // ------------------------- Device Functions --------------------------------------
@@ -717,9 +950,21 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical_device, co
 
         // Look through extensions
         for (uint32_t ext = 0; ext < local_create.enabledExtensionCount; ++ext) {
+            if (0 == strcmp(local_create.ppEnabledExtensionNames[ext], VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME)) {
+                device_map_data->extension_enables.KHR_sync2 = true;
+            }
+            if (0 == strcmp(local_create.ppEnabledExtensionNames[ext], VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)) {
+                device_map_data->extension_enables.KHR_external_mem_fd = true;
+            }
             if (0 == strcmp(local_create.ppEnabledExtensionNames[ext], VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
                 device_map_data->extension_enables.EXT_mem_budget = true;
             }
+#ifdef ANDROID
+            if (0 == strcmp(local_create.ppEnabledExtensionNames[ext],
+                            VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME)) {
+                device_map_data->extension_enables.ANDROID_ext_mem_hw_buf = true;
+            }
+#endif
         }
 
         if (phys_dev_data_entry->props.deviceName[0] == 0) {
@@ -765,10 +1010,41 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateBuffer(VkDevice device, const VkBufferCreat
     VkResult result = pDisp->CreateBuffer(device, pCreateInfo, pAllocator, pBuffer);
     if (result == VK_SUCCESS) {
         BufferMapStruct *buffer_map_data = new BufferMapStruct;
+        memset(buffer_map_data, 0, sizeof(BufferMapStruct));
         buffer_map_data->device = device;
         memcpy(&buffer_map_data->create_info, pCreateInfo, sizeof(VkBufferCreateInfo));
-        memset(&buffer_map_data->memory_reqs, 0, sizeof(VkMemoryRequirements));
         buffer_map_data->create_info.pNext = nullptr;
+
+        const VkBaseInStructure *next_struct = reinterpret_cast<const VkBaseInStructure *>(pCreateInfo->pNext);
+        while (next_struct != nullptr) {
+            switch (next_struct->sType) {
+                case VK_STRUCTURE_TYPE_BUFFER_OPAQUE_CAPTURE_ADDRESS_CREATE_INFO: {
+                    const VkBufferOpaqueCaptureAddressCreateInfo *ci =
+                        reinterpret_cast<const VkBufferOpaqueCaptureAddressCreateInfo *>(next_struct);
+                    buffer_map_data->additional_info.flags |= ADD_BUFFER_VALID_OPAQUE_CAPTURE;
+                    buffer_map_data->additional_info.opaque_capture_address = ci->opaqueCaptureAddress;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO: {
+                    const VkExternalMemoryBufferCreateInfo *ci =
+                        reinterpret_cast<const VkExternalMemoryBufferCreateInfo *>(next_struct);
+                    buffer_map_data->additional_info.flags |= ADD_BUFFER_VALID_EXTERNAL_MEM_HANDLE_FLAGS;
+                    buffer_map_data->additional_info.external_memory_handle_flags = ci->handleTypes;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_CREATE_INFO_EXT: {
+                    const VkBufferDeviceAddressCreateInfoEXT *ci =
+                        reinterpret_cast<const VkBufferDeviceAddressCreateInfoEXT *>(next_struct);
+                    buffer_map_data->additional_info.flags |= ADD_BUFFER_VALID_DEVICE_ADDRESS;
+                    buffer_map_data->additional_info.device_address = ci->deviceAddress;
+                    break;
+                }
+                default:
+                    break;
+            }
+            next_struct = reinterpret_cast<const VkBaseInStructure *>(next_struct->pNext);
+        }
+
         g_buffer_map[*pBuffer] = buffer_map_data;
     }
     return result;
@@ -790,10 +1066,83 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateImage(VkDevice device, const VkImageCreateI
     VkResult result = pDisp->CreateImage(device, pCreateInfo, pAllocator, pImage);
     if (result == VK_SUCCESS) {
         ImageMapStruct *image_map_data = new ImageMapStruct;
+        memset(image_map_data, 0, sizeof(ImageMapStruct));
         image_map_data->device = device;
         memcpy(&image_map_data->create_info, pCreateInfo, sizeof(VkImageCreateInfo));
-        memset(&image_map_data->memory_reqs, 0, sizeof(VkMemoryRequirements));
         image_map_data->create_info.pNext = nullptr;
+
+        const VkBaseInStructure *next_struct = reinterpret_cast<const VkBaseInStructure *>(pCreateInfo->pNext);
+        while (next_struct != nullptr) {
+            switch (next_struct->sType) {
+                case VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO: {
+                    const VkExternalMemoryImageCreateInfo *ci =
+                        reinterpret_cast<const VkExternalMemoryImageCreateInfo *>(next_struct);
+                    image_map_data->additional_info.flags |= ADD_IMAGE_VALID_EXTERNAL_MEM_HANDLE_FLAGS;
+                    image_map_data->additional_info.external_memory_handle_flags = ci->handleTypes;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO: {
+                    const VkImageFormatListCreateInfo *ci = reinterpret_cast<const VkImageFormatListCreateInfo *>(next_struct);
+                    image_map_data->additional_info.flags |= ADD_IMAGE_VALID_FORMAT_LIST;
+                    for (uint32_t i = 0; i < ci->viewFormatCount; ++i) {
+                        image_map_data->additional_info.format_list.push_back(ci->pViewFormats[i]);
+                    }
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO: {
+                    const VkImageStencilUsageCreateInfo *ci = reinterpret_cast<const VkImageStencilUsageCreateInfo *>(next_struct);
+                    image_map_data->additional_info.flags |= ADD_IMAGE_VALID_STENCIL_USAGE;
+                    image_map_data->additional_info.stencil_usage = ci->stencilUsage;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_IMAGE_SWAPCHAIN_CREATE_INFO_KHR: {
+                    const VkImageSwapchainCreateInfoKHR *ci = reinterpret_cast<const VkImageSwapchainCreateInfoKHR *>(next_struct);
+                    image_map_data->additional_info.flags |= ADD_IMAGE_VALID_SWAPCHAIN;
+                    image_map_data->additional_info.swapchain = ci->swapchain;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT: {
+                    const VkImageCompressionControlEXT *ci = reinterpret_cast<const VkImageCompressionControlEXT *>(next_struct);
+                    image_map_data->additional_info.flags |= ADD_IMAGE_VALID_COMPRESSION_CONTROL;
+                    image_map_data->additional_info.image_compress_flags = ci->flags;
+                    for (uint32_t i = 0; i < ci->compressionControlPlaneCount; ++i) {
+                        image_map_data->additional_info.fixed_rate_flags.push_back(ci->pFixedRateFlags[i]);
+                    }
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT: {
+                    const VkImageDrmFormatModifierExplicitCreateInfoEXT *ci =
+                        reinterpret_cast<const VkImageDrmFormatModifierExplicitCreateInfoEXT *>(next_struct);
+                    image_map_data->additional_info.flags |= ADD_IMAGE_VALID_DRM_FORMAT_MOD_EXPLICIT;
+                    image_map_data->additional_info.drm_format_modifier = ci->drmFormatModifier;
+                    for (uint32_t i = 0; i < ci->drmFormatModifierPlaneCount; ++i) {
+                        image_map_data->additional_info.plane_layouts.push_back(ci->pPlaneLayouts[i]);
+                    }
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT: {
+                    const VkImageDrmFormatModifierListCreateInfoEXT *ci =
+                        reinterpret_cast<const VkImageDrmFormatModifierListCreateInfoEXT *>(next_struct);
+                    image_map_data->additional_info.flags |= ADD_IMAGE_VALID_DRM_FORMAT_MOD_LIST;
+                    for (uint32_t i = 0; i < ci->drmFormatModifierCount; ++i) {
+                        image_map_data->additional_info.drm_format_modifiers.push_back(ci->pDrmFormatModifiers[i]);
+                    }
+                    break;
+                }
+#ifdef ANDROID
+                case VK_STRUCTURE_TYPE_EXTERNAL_FORMAT_ANDROID: {
+                    const VkExternalFormatANDROID *ci = reinterpret_cast<const VkExternalFormatANDROID *>(next_struct);
+                    image_map_data->additional_info.flags |= ADD_IMAGE_VALID_EXTERNAL_FORMAT_ANDROID;
+                    image_map_data->additional_info.external_android_format = ci->externalFormat;
+                    break;
+                }
+#endif
+                default:
+                    break;
+            }
+            next_struct = reinterpret_cast<const VkBaseInStructure *>(next_struct->pNext);
+        }
+
         g_image_map[*pImage] = image_map_data;
     }
     return result;
@@ -819,6 +1168,18 @@ VKAPI_ATTR void VKAPI_CALL GetBufferMemoryRequirements(VkDevice device, VkBuffer
     memcpy(&buffer_map_data->memory_reqs, pMemoryRequirements, sizeof(VkMemoryRequirements));
 }
 
+VKAPI_ATTR void VKAPI_CALL GetBufferMemoryRequirements2(VkDevice device, const VkBufferMemoryRequirementsInfo2 *pInfo,
+                                                        VkMemoryRequirements2 *pMemoryRequirements) {
+    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
+    BufferMapStruct *buffer_map_data = GetBufferMapEntry(pInfo->buffer);
+    assert(device_map_data);
+    assert(buffer_map_data);
+    assert(buffer_map_data->device == device);
+    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
+    pDisp->GetBufferMemoryRequirements2(device, pInfo, pMemoryRequirements);
+    memcpy(&buffer_map_data->memory_reqs, &pMemoryRequirements->memoryRequirements, sizeof(VkMemoryRequirements));
+}
+
 VKAPI_ATTR void VKAPI_CALL GetImageMemoryRequirements(VkDevice device, VkImage image, VkMemoryRequirements *pMemoryRequirements) {
     DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
     ImageMapStruct *image_map_data = GetImageMapEntry(image);
@@ -830,6 +1191,35 @@ VKAPI_ATTR void VKAPI_CALL GetImageMemoryRequirements(VkDevice device, VkImage i
     memcpy(&image_map_data->memory_reqs, pMemoryRequirements, sizeof(VkMemoryRequirements));
 }
 
+VKAPI_ATTR void VKAPI_CALL GetImageMemoryRequirements2(VkDevice device, const VkImageMemoryRequirementsInfo2 *pInfo,
+                                                       VkMemoryRequirements2 *pMemoryRequirements) {
+    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
+    ImageMapStruct *image_map_data = GetImageMapEntry(pInfo->image);
+    assert(device_map_data);
+    assert(image_map_data);
+    assert(image_map_data->device == device);
+    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
+    pDisp->GetImageMemoryRequirements2(device, pInfo, pMemoryRequirements);
+    memcpy(&image_map_data->memory_reqs, &pMemoryRequirements->memoryRequirements, sizeof(VkMemoryRequirements));
+}
+
+VKAPI_ATTR void VKAPI_CALL GetDeviceBufferMemoryRequirements(VkDevice device, const VkDeviceBufferMemoryRequirements *pInfo,
+                                                             VkMemoryRequirements2 *pMemoryRequirements) {
+    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
+    assert(device_map_data);
+    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
+    pDisp->GetDeviceBufferMemoryRequirements(device, pInfo, pMemoryRequirements);
+    // TODO: How to
+}
+
+VKAPI_ATTR void VKAPI_CALL GetDeviceImageMemoryRequirements(VkDevice device, const VkDeviceImageMemoryRequirements *pInfo,
+                                                            VkMemoryRequirements2 *pMemoryRequirements) {
+    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
+    assert(device_map_data);
+    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
+    pDisp->GetDeviceImageMemoryRequirements(device, pInfo, pMemoryRequirements);
+}
+
 VKAPI_ATTR void VKAPI_CALL GetImageSparseMemoryRequirements(VkDevice device, VkImage image, uint32_t *pSparseMemoryRequirementCount,
                                                             VkSparseImageMemoryRequirements *pSparseMemoryRequirements) {
     DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
@@ -837,6 +1227,28 @@ VKAPI_ATTR void VKAPI_CALL GetImageSparseMemoryRequirements(VkDevice device, VkI
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->GetImageSparseMemoryRequirements(device, image, pSparseMemoryRequirementCount, pSparseMemoryRequirements);
 }
+
+VKAPI_ATTR VkResult VKAPI_CALL GetMemoryFdPropertiesKHR(VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, int fd,
+                                                        VkMemoryFdPropertiesKHR *pMemoryFdProperties) {
+    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
+    assert(device_map_data);
+    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
+    VkResult result = pDisp->GetMemoryFdPropertiesKHR(device, handleType, fd, pMemoryFdProperties);
+    // TODO: How to
+    return result;
+}
+
+#ifdef ANDROID
+VKAPI_ATTR VkResult VKAPI_CALL GetAndroidHardwareBufferPropertiesANDROID(VkDevice device, const struct AHardwareBuffer *buffer,
+                                                                         VkAndroidHardwareBufferPropertiesANDROID *pProperties) {
+    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
+    assert(device_map_data);
+    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
+    VkResult result = pDisp->GetAndroidHardwareBufferPropertiesANDROID(device, buffer, pProperties);
+    // TODO: How to
+    return result;
+}
+#endif  // ANDROID
 
 VKAPI_ATTR VkResult VKAPI_CALL AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *pAllocateInfo,
                                               const VkAllocationCallbacks *pAllocator, VkDeviceMemory *pMemory) {
@@ -846,9 +1258,79 @@ VKAPI_ATTR VkResult VKAPI_CALL AllocateMemory(VkDevice device, const VkMemoryAll
     VkResult result = pDisp->AllocateMemory(device, pAllocateInfo, pAllocator, pMemory);
     if (result == VK_SUCCESS) {
         MemoryMapStruct *memory_map_data = new MemoryMapStruct;
+        memset(memory_map_data, 0, sizeof(MemoryMapStruct));
         memory_map_data->device = device;
         memcpy(&memory_map_data->alloc_info, pAllocateInfo, sizeof(VkMemoryAllocateInfo));
         memory_map_data->alloc_info.pNext = nullptr;
+
+        const VkBaseInStructure *next_struct = reinterpret_cast<const VkBaseInStructure *>(pAllocateInfo->pNext);
+        while (next_struct != nullptr) {
+            switch (next_struct->sType) {
+                case VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO: {
+                    const VkExportMemoryAllocateInfo *ci = reinterpret_cast<const VkExportMemoryAllocateInfo *>(next_struct);
+                    memory_map_data->additional_info.flags |= ADD_MEM_VALID_EXTERNAL_MEM_HANDLE_FLAGS;
+                    memory_map_data->additional_info.external_memory_handle_flags = ci->handleTypes;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO: {
+                    const VkMemoryDedicatedAllocateInfo *ci = reinterpret_cast<const VkMemoryDedicatedAllocateInfo *>(next_struct);
+                    memory_map_data->additional_info.flags |= ADD_MEM_VALID_DEDICATED_ALLOC;
+                    memory_map_data->additional_info.dedicated_image = ci->image;
+                    memory_map_data->additional_info.dedicated_buffer = ci->buffer;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO: {
+                    const VkMemoryAllocateFlagsInfo *ci = reinterpret_cast<const VkMemoryAllocateFlagsInfo *>(next_struct);
+                    memory_map_data->additional_info.flags |= ADD_MEM_VALID_ALLOCATE_FLAG_INFO;
+                    memory_map_data->additional_info.memory_alloc_flags = ci->flags;
+                    memory_map_data->additional_info.memory_alloc_device_mask = ci->deviceMask;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO: {
+                    const VkMemoryOpaqueCaptureAddressAllocateInfo *ci =
+                        reinterpret_cast<const VkMemoryOpaqueCaptureAddressAllocateInfo *>(next_struct);
+                    memory_map_data->additional_info.flags |= ADD_MEM_VALID_OPAQUE_CAPTURE_ADDRESS;
+                    memory_map_data->additional_info.opaque_capture_address = ci->opaqueCaptureAddress;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR: {
+                    const VkImportMemoryFdInfoKHR *ci = reinterpret_cast<const VkImportMemoryFdInfoKHR *>(next_struct);
+                    memory_map_data->additional_info.flags |= ADD_MEM_VALID_EXTERNAL_MEM_FD;
+                    memory_map_data->additional_info.ext_memory_fd_handle_type = ci->handleType;
+                    memory_map_data->additional_info.ext_memory_fd = ci->fd;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT: {
+                    const VkImportMemoryHostPointerInfoEXT *ci =
+                        reinterpret_cast<const VkImportMemoryHostPointerInfoEXT *>(next_struct);
+                    memory_map_data->additional_info.flags |= ADD_MEM_VALID_IMPORT_HOST_POINTER;
+                    memory_map_data->additional_info.import_host_ptr_handle_type = ci->handleType;
+                    memory_map_data->additional_info.import_host_ptr = ci->pHostPointer;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT: {
+                    const VkMemoryPriorityAllocateInfoEXT *ci =
+                        reinterpret_cast<const VkMemoryPriorityAllocateInfoEXT *>(next_struct);
+                    memory_map_data->additional_info.flags |= ADD_MEM_VALID_PRIORITY;
+                    memory_map_data->additional_info.memory_priority = ci->priority;
+                    break;
+                }
+#ifdef ANDROID
+                case VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID: {
+                    const VkImportAndroidHardwareBufferInfoANDROID *ci =
+                        reinterpret_cast<const VkImportAndroidHardwareBufferInfoANDROID *>(next_struct);
+                    memory_map_data->additional_info.flags |= ADD_MEM_VALID_ANDROID_HARDWARE_BUFFER;
+                    memory_map_data->additional_info.android_hw_buffer = ci->buffer;
+                    break;
+                }
+#endif
+                default:
+                    break;
+            }
+
+            next_struct = reinterpret_cast<const VkBaseInStructure *>(next_struct->pNext);
+        }
+
         g_memory_map[*pMemory] = memory_map_data;
     }
     return result;
@@ -929,30 +1411,6 @@ VKAPI_ATTR VkResult VKAPI_CALL BindImageMemory(VkDevice device, VkImage image, V
     return result;
 }
 
-VKAPI_ATTR void VKAPI_CALL GetImageMemoryRequirements2(VkDevice device, const VkImageMemoryRequirementsInfo2 *pInfo,
-                                                       VkMemoryRequirements2 *pMemoryRequirements) {
-    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
-    ImageMapStruct *image_map_data = GetImageMapEntry(pInfo->image);
-    assert(device_map_data);
-    assert(image_map_data);
-    assert(image_map_data->device == device);
-    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
-    pDisp->GetImageMemoryRequirements2(device, pInfo, pMemoryRequirements);
-    memcpy(&image_map_data->memory_reqs, &pMemoryRequirements->memoryRequirements, sizeof(VkMemoryRequirements));
-}
-
-VKAPI_ATTR void VKAPI_CALL GetBufferMemoryRequirements2(VkDevice device, const VkBufferMemoryRequirementsInfo2 *pInfo,
-                                                        VkMemoryRequirements2 *pMemoryRequirements) {
-    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
-    BufferMapStruct *buffer_map_data = GetBufferMapEntry(pInfo->buffer);
-    assert(device_map_data);
-    assert(buffer_map_data);
-    assert(buffer_map_data->device == device);
-    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
-    pDisp->GetBufferMemoryRequirements2(device, pInfo, pMemoryRequirements);
-    memcpy(&buffer_map_data->memory_reqs, &pMemoryRequirements->memoryRequirements, sizeof(VkMemoryRequirements));
-}
-
 VKAPI_ATTR VkResult VKAPI_CALL BindBufferMemory2(VkDevice device, uint32_t bindInfoCount,
                                                  const VkBindBufferMemoryInfo *pBindInfos) {
     DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
@@ -1018,6 +1476,10 @@ VKAPI_ATTR VkResult VKAPI_CALL BindImageMemory2(VkDevice device, uint32_t bindIn
                     memory_map_data->images.push_back(image_data);
                 }
             }
+#if 0   // Brainpain
+VkBindImageMemoryDeviceGroupInfo,
+VkBindImageMemorySwapchainInfoKHR, or VkBindImagePlaneMemoryInfo
+#endif  // Brainpain
         }
         device_map_data->memory_bindings_updated = true;
 
@@ -1044,6 +1506,32 @@ VKAPI_ATTR VkResult VKAPI_CALL QueueSubmit(VkQueue queue, uint32_t submitCount, 
     assert(device_map_data);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     VkResult result = pDisp->QueueSubmit(queue, submitCount, pSubmits, fence);
+    if (result == VK_SUCCESS) {
+        PhysDeviceMapStruct *phys_dev_data_entry = GetPhysicalDeviceMapEntry(device_map_data->physical_device);
+        if (device_map_data->memory_bindings_updated) {
+            if (!phys_dev_data_entry->memory_budget_updated) {
+                VkPhysicalDeviceMemoryBudgetPropertiesEXT budget_props = {};
+                budget_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+                budget_props.pNext = nullptr;
+                VkPhysicalDeviceMemoryProperties2 mem_props2 = {};
+                mem_props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+                mem_props2.pNext = &budget_props;
+                GetPhysicalDeviceMemoryProperties2(device_map_data->physical_device, &mem_props2);
+            }
+
+            DumpMemory(device_map_data, phys_dev_data_entry, device_map_data->extension_enables.EXT_mem_budget);
+            device_map_data->memory_bindings_updated = false;
+        }
+    }
+    return result;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL QueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2 *pSubmits, VkFence fence) {
+    VkDevice device = g_queue_to_device_map[queue];
+    DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
+    assert(device_map_data);
+    VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
+    VkResult result = pDisp->QueueSubmit2(queue, submitCount, pSubmits, fence);
     if (result == VK_SUCCESS) {
         PhysDeviceMapStruct *phys_dev_data_entry = GetPhysicalDeviceMapEntry(device_map_data->physical_device);
         if (device_map_data->memory_bindings_updated) {
@@ -1137,7 +1625,9 @@ static PFN_vkVoidFunction ImplementedInstanceNewerCoreCommands(InstanceMapStruct
         } version_instance_commands[] = {
             {"vkEnumeratePhysicalDeviceGroups2", reinterpret_cast<PFN_vkVoidFunction>(EnumeratePhysicalDeviceGroups)},
             {"vkGetPhysicalDeviceProperties2", reinterpret_cast<PFN_vkVoidFunction>(GetPhysicalDeviceProperties2)},
-            {"vkGetPhysicalDeviceMemoryProperties2", reinterpret_cast<PFN_vkVoidFunction>(GetPhysicalDeviceMemoryProperties2)}};
+            {"vkGetPhysicalDeviceMemoryProperties2", reinterpret_cast<PFN_vkVoidFunction>(GetPhysicalDeviceMemoryProperties2)},
+            {"vkGetPhysicalDeviceExternalBufferProperties",
+             reinterpret_cast<PFN_vkVoidFunction>(GetPhysicalDeviceExternalBufferProperties)}};
         for (size_t i = 0; i < ARRAY_SIZE(version_instance_commands); i++) {
             if (!strcmp(version_instance_commands[i].name, name)) return version_instance_commands[i].proc;
         }
@@ -1151,21 +1641,31 @@ static PFN_vkVoidFunction ImplementedInstanceExtensionCommands(InstanceMapStruct
         static const struct {
             const char *name;
             PFN_vkVoidFunction proc;
-        } dev_group_create_commands[] = {
+        } ext_commands[] = {
             {"vkEnumeratePhysicalDeviceGroupsKHR", reinterpret_cast<PFN_vkVoidFunction>(EnumeratePhysicalDeviceGroups)}};
-        for (size_t i = 0; i < ARRAY_SIZE(dev_group_create_commands); i++) {
-            if (!strcmp(dev_group_create_commands[i].name, name)) return dev_group_create_commands[i].proc;
+        for (size_t i = 0; i < ARRAY_SIZE(ext_commands); i++) {
+            if (!strcmp(ext_commands[i].name, name)) return ext_commands[i].proc;
+        }
+    }
+    if (instance_map_data->extension_enables.KHR_external_mem_caps) {
+        static const struct {
+            const char *name;
+            PFN_vkVoidFunction proc;
+        } ext_commands[] = {{"vkGetPhysicalDeviceExternalBufferPropertiesKHR",
+                             reinterpret_cast<PFN_vkVoidFunction>(GetPhysicalDeviceExternalBufferProperties)}};
+        for (size_t i = 0; i < ARRAY_SIZE(ext_commands); i++) {
+            if (!strcmp(ext_commands[i].name, name)) return ext_commands[i].proc;
         }
     }
     if (instance_map_data->extension_enables.KHR_get_phys_dev_props2) {
         static const struct {
             const char *name;
             PFN_vkVoidFunction proc;
-        } phys_dev_props2_commands[] = {
+        } ext_commands[] = {
             {"vkGetPhysicalDeviceProperties2KHR", reinterpret_cast<PFN_vkVoidFunction>(GetPhysicalDeviceProperties2)},
             {"vkGetPhysicalDeviceMemoryProperties2KHR", reinterpret_cast<PFN_vkVoidFunction>(GetPhysicalDeviceMemoryProperties2)}};
-        for (size_t i = 0; i < ARRAY_SIZE(phys_dev_props2_commands); i++) {
-            if (!strcmp(phys_dev_props2_commands[i].name, name)) return phys_dev_props2_commands[i].proc;
+        for (size_t i = 0; i < ARRAY_SIZE(ext_commands); i++) {
+            if (!strcmp(ext_commands[i].name, name)) return ext_commands[i].proc;
         }
     }
 
@@ -1223,19 +1723,71 @@ static PFN_vkVoidFunction ImplementedDeviceCommands(const char *name) {
 }
 
 static PFN_vkVoidFunction ImplementedDeviceExtensionCommands(DeviceExtensions *supported, const char *name) {
-    if (supported == nullptr || supported->core_1_1) {
-        static const struct {
-            const char *name;
-            PFN_vkVoidFunction proc;
-        } core_device_commands[] = {
-            {"vkGetImageMemoryRequirements2", reinterpret_cast<PFN_vkVoidFunction>(GetImageMemoryRequirements2)},
-            {"vkGetBufferMemoryRequirements2", reinterpret_cast<PFN_vkVoidFunction>(GetBufferMemoryRequirements2)},
-            {"vkBindBufferMemory2", reinterpret_cast<PFN_vkVoidFunction>(BindBufferMemory2)},
-            {"vkBindImageMemory2", reinterpret_cast<PFN_vkVoidFunction>(BindImageMemory2)}};
+    if (supported != nullptr) {
+        if (supported->core_1_1) {
+            static const struct {
+                const char *name;
+                PFN_vkVoidFunction proc;
+            } core_device_commands[] = {
+                {"vkGetImageMemoryRequirements2", reinterpret_cast<PFN_vkVoidFunction>(GetImageMemoryRequirements2)},
+                {"vkGetBufferMemoryRequirements2", reinterpret_cast<PFN_vkVoidFunction>(GetBufferMemoryRequirements2)},
+                {"vkBindBufferMemory2", reinterpret_cast<PFN_vkVoidFunction>(BindBufferMemory2)},
+                {"vkBindImageMemory2", reinterpret_cast<PFN_vkVoidFunction>(BindImageMemory2)}};
 
-        for (size_t i = 0; i < ARRAY_SIZE(core_device_commands); i++) {
-            if (!strcmp(core_device_commands[i].name, name)) return core_device_commands[i].proc;
+            for (size_t i = 0; i < ARRAY_SIZE(core_device_commands); i++) {
+                if (!strcmp(core_device_commands[i].name, name)) return core_device_commands[i].proc;
+            }
         }
+        if (supported->core_1_3) {
+            static const struct {
+                const char *name;
+                PFN_vkVoidFunction proc;
+            } core_device_commands[] = {
+                {"vkGetDeviceBufferMemoryRequirements", reinterpret_cast<PFN_vkVoidFunction>(GetDeviceBufferMemoryRequirements)},
+                {"vkGetDeviceImageMemoryRequirements", reinterpret_cast<PFN_vkVoidFunction>(GetDeviceImageMemoryRequirements)},
+                {"vkQueueSubmit2", reinterpret_cast<PFN_vkVoidFunction>(QueueSubmit2)}};
+
+            for (size_t i = 0; i < ARRAY_SIZE(core_device_commands); i++) {
+                if (!strcmp(core_device_commands[i].name, name)) return core_device_commands[i].proc;
+            }
+        }
+        if (supported->KHR_external_mem_fd) {
+            static const struct {
+                const char *name;
+                PFN_vkVoidFunction proc;
+            } device_ext_commands[] = {
+                {"vkGetMemoryFdPropertiesKHR", reinterpret_cast<PFN_vkVoidFunction>(GetMemoryFdPropertiesKHR)}};
+
+            for (size_t i = 0; i < ARRAY_SIZE(device_ext_commands); i++) {
+                if (!strcmp(device_ext_commands[i].name, name)) return device_ext_commands[i].proc;
+            }
+        }
+        if (supported->KHR_sync2) {
+            static const struct {
+                const char *name;
+                PFN_vkVoidFunction proc;
+            } device_ext_commands[] = {
+                {"vkGetDeviceBufferMemoryRequirementsKHR", reinterpret_cast<PFN_vkVoidFunction>(GetDeviceBufferMemoryRequirements)},
+                {"vkGetDeviceImageMemoryRequirementsKHR", reinterpret_cast<PFN_vkVoidFunction>(GetDeviceImageMemoryRequirements)},
+                {"vkQueueSubmit2KHR", reinterpret_cast<PFN_vkVoidFunction>(QueueSubmit2)}};
+
+            for (size_t i = 0; i < ARRAY_SIZE(device_ext_commands); i++) {
+                if (!strcmp(device_ext_commands[i].name, name)) return device_ext_commands[i].proc;
+            }
+        }
+#ifdef ANDROID
+        if (supported->ANDROID_ext_mem_hw_buf) {
+            static const struct {
+                const char *name;
+                PFN_vkVoidFunction proc;
+            } device_ext_commands[] = {{"vkGetAndroidHardwareBufferPropertiesANDROID",
+                                        reinterpret_cast<PFN_vkVoidFunction>(GetAndroidHardwareBufferPropertiesANDROID)}};
+
+            for (size_t i = 0; i < ARRAY_SIZE(device_ext_commands); i++) {
+                if (!strcmp(device_ext_commands[i].name, name)) return device_ext_commands[i].proc;
+            }
+        }
+#endif
     }
 
     return nullptr;
