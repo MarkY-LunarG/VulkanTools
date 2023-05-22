@@ -17,6 +17,7 @@
  */
 
 #include <inttypes.h>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -49,6 +50,9 @@ static const VkLayerProperties g_layer_properties = {
     1,                                 // implementationVersion
     "Layer: memory_tracker",           // description
 };
+
+// Global mutex for restring instance create/destroys and prints to one at a time
+static std::mutex g_instance_mutex;
 
 struct InstanceExtensionsEnabled {
     bool core_1_1 = false;
@@ -91,6 +95,7 @@ struct PhysDeviceMapStruct {
     PhysicalDeviceMemoryBudgetProperties memory_props;
     DeviceExtensions extensions_supported;
     bool memory_budget_updated = false;
+    std::mutex device_mutex;
 };
 static std::unordered_map<VkPhysicalDevice, PhysDeviceMapStruct *> g_phys_device_map;
 
@@ -99,8 +104,24 @@ struct DeviceMapStruct {
     VkLayerDispatchTable *dispatch_table;
     DeviceExtensions extension_enables;
     bool memory_bindings_updated = false;
+    std::mutex memory_mutex;
 };
 static std::unordered_map<VkDevice, DeviceMapStruct *> g_device_map;
+
+struct ExternalMemFdMapStruct {
+    VkDevice device;
+    uint32_t memory_type;
+};
+static std::unordered_map<int64_t, ExternalMemFdMapStruct *> g_ext_mem_fd_map;
+
+#ifdef ANDROID
+struct AndroidBufferMapStruct {
+    VkDevice device;
+    VkDeviceSize alloc_size;
+    uint32_t memory_type;
+};
+static std::unordered_map<const AHardwareBuffer *, AndroidBufferMapStruct *> g_android_buf_map;
+#endif
 
 enum AdditionalBufferValidFlags {
     ADD_BUFFER_VALID_NONE = 0x00000000,
@@ -110,7 +131,7 @@ enum AdditionalBufferValidFlags {
 };
 
 struct AdditionalBufferStruct {
-    uint32_t flags;
+    uint32_t flags = 0;
     uint64_t opaque_capture_address;                               // ADD_BUFFER_VALID_OPAQUE_CAPTURE
     VkExternalMemoryHandleTypeFlags external_memory_handle_flags;  // ADD_BUFFER_VALID_EXTERNAL_MEM_HANDLE_FLAGS
     VkDeviceAddress device_address;                                // ADD_BUFFER_VALID_DEVICE_ADDRESS
@@ -137,7 +158,7 @@ enum AdditionalImageValidFlags {
 };
 
 struct AdditionalImageStruct {
-    uint32_t flags;
+    uint32_t flags = 0;
     VkExternalMemoryHandleTypeFlags external_memory_handle_flags;       // ADD_IMAGE_VALID_EXTERNAL_MEM_HANDLE_FLAGS
     std::vector<VkFormat> format_list;                                  // ADD_IMAGE_VALID_FORMAT_LIST
     VkImageUsageFlags stencil_usage;                                    // ADD_IMAGE_VALID_STENCIL_USAGE
@@ -162,9 +183,23 @@ struct BufferMemoryStruct {
     VkBuffer buffer;
     VkDeviceSize offset;
 };
+
+enum AdditionalImageMemoryValidFlags {
+    ADD_IMAGE_MEM_VALID_NONE = 0x00000000,
+    ADD_IMAGE_MEM_VALID_PLANE_MEM = 0x00000001,
+    ADD_IMAGE_MEM_VALID_SWAPCHAIN = 0x00000002,
+};
+struct AdditionalImageMemoryStruct {
+    uint32_t flags = 0;
+    VkImageAspectFlagBits plane_mem_aspect;  // ADD_IMAGE_MEM_VALID_PLANE_MEM
+    VkSwapchainKHR swapchain;                // ADD_IMAGE_MEM_VALID_SWAPCHAIN
+    uint32_t swapchain_image_index;          // ADD_IMAGE_MEM_VALID_SWAPCHAIN
+};
+
 struct ImageMemoryStruct {
     VkImage image;
     VkDeviceSize offset;
+    AdditionalImageMemoryStruct additional_info;
 };
 
 enum AdditionalMemoryValidFlags {
@@ -180,7 +215,7 @@ enum AdditionalMemoryValidFlags {
 };
 
 struct AdditionalMemoryStruct {
-    uint32_t flags;
+    uint32_t flags = 0;
     VkExternalMemoryHandleTypeFlags external_memory_handle_flags;    // ADD_MEM_VALID_EXTERNAL_MEM_HANDLE_FLAGS
     VkImage dedicated_image;                                         // ADD_MEM_VALID_DEDICATED_ALLOC
     VkBuffer dedicated_buffer;                                       // ADD_MEM_VALID_DEDICATED_ALLOC
@@ -218,6 +253,7 @@ static InstanceMapStruct *GetInstanceMapEntry(VkInstance instance) {
 }
 
 static void EraseInstanceMapEntry(VkInstance instance) {
+    std::unique_lock<std::mutex> lock(g_instance_mutex);
     InstanceMapStruct *map = GetInstanceMapEntry(instance);
     if (map != nullptr) {
         delete map->dispatch_table;
@@ -252,6 +288,48 @@ static void EraseDeviceMapEntry(VkDevice device) {
         g_device_map.erase(device);
     }
 }
+
+static ExternalMemFdMapStruct *GetExternalMemFdMapEntry(uint64_t fd) {
+    auto it = g_ext_mem_fd_map.find(fd);
+    if (it == g_ext_mem_fd_map.end()) {
+        return nullptr;
+    } else {
+        return it->second;
+    }
+}
+
+static void EraseExternalMemFdMapEntries(VkDevice device) {
+restart_loop:
+    for (auto &ext_mem_fd_iter : g_ext_mem_fd_map) {
+        ExternalMemFdMapStruct *map = ext_mem_fd_iter.second;
+        if (map->device == device) {
+            g_ext_mem_fd_map.erase(ext_mem_fd_iter.first);
+            goto restart_loop;
+        }
+    }
+}
+
+#ifdef ANDROID
+static AndroidBufferMapStruct *GetAndroidBufferMapEntry(AHardwareBuffer *android_buf) {
+    auto it = g_android_buf_map.find(android_buf);
+    if (it == g_android_buf_map.end()) {
+        return nullptr;
+    } else {
+        return it->second;
+    }
+}
+
+static void EraseAndroidBufferMapEntries(VkDevice device) {
+restart_loop:
+    for (auto &and_buf_iter : g_android_buf_map) {
+        AndroidBufferMapStruct *map = and_buf_iter.second;
+        if (map->device == device) {
+            g_android_buf_map.erase(and_buf_iter.first);
+            goto restart_loop;
+        }
+    }
+}
+#endif  // ANDROID
 
 static BufferMapStruct *GetBufferMapEntry(VkBuffer buffer) {
     auto it = g_buffer_map.find(buffer);
@@ -329,148 +407,169 @@ static void EraseMemoryMapEntry(VkDeviceMemory memory) {
 }
 
 void DumpMemory(DeviceMapStruct *device_map_data, PhysDeviceMapStruct *phys_dev_data_entry, bool supports_memory_budget) {
+    std::unique_lock<std::mutex> i_lock(g_instance_mutex);
+    std::unique_lock<std::mutex> d_lock(phys_dev_data_entry->device_mutex);
+
     WRITE_LOG_MESSAGE("Device : %s", phys_dev_data_entry->props.deviceName);
 
     for (uint32_t heap = 0; heap < phys_dev_data_entry->memory_props.memoryHeapCount; ++heap) {
-        WRITE_LOG_MESSAGE("  -----Heap %02d-----------------------------", heap);
-        WRITE_LOG_MESSAGE("  |    Total Size %14" PRIu64 "           |", phys_dev_data_entry->memory_props.memoryHeaps[heap].size);
+        WRITE_LOG_MESSAGE("  -----Heap %02d-------------------------------", heap);
+        WRITE_LOG_MESSAGE("  |    Total Size %14" PRIu64 "             |",
+                          phys_dev_data_entry->memory_props.memoryHeaps[heap].size);
         if (supports_memory_budget) {
-            WRITE_LOG_MESSAGE("  |    Budget     %14" PRIu64 "           |",
+            WRITE_LOG_MESSAGE("  |    Budget     %14" PRIu64 "             |",
                               phys_dev_data_entry->memory_props.memoryHeaps[heap].budget);
-            WRITE_LOG_MESSAGE("  |    Usage      %14" PRIu64 "           |",
+            WRITE_LOG_MESSAGE("  |    Usage      %14" PRIu64 "             |",
                               phys_dev_data_entry->memory_props.memoryHeaps[heap].usage);
         }
-        WRITE_LOG_MESSAGE("  |    Flags                               |");
+        WRITE_LOG_MESSAGE("  |    Flags                                 |");
         if (phys_dev_data_entry->memory_props.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-            WRITE_LOG_MESSAGE("  |      DEVICE_LOCAL                      |");
+            WRITE_LOG_MESSAGE("  |      DEVICE_LOCAL                        |");
         }
         if (phys_dev_data_entry->memory_props.memoryHeaps[heap].flags & VK_MEMORY_HEAP_MULTI_INSTANCE_BIT) {
-            WRITE_LOG_MESSAGE("  |      MULTI_INSTANCE                    |");
+            WRITE_LOG_MESSAGE("  |      MULTI_INSTANCE                      |");
         }
         for (uint32_t type = 0; type < phys_dev_data_entry->memory_props.memoryTypeCount; ++type) {
             if (heap == phys_dev_data_entry->memory_props.memoryTypes[type].heapIndex) {
-                WRITE_LOG_MESSAGE("  |                                        |");
-                WRITE_LOG_MESSAGE("  |   ---Type %02d---                        |", type);
-                WRITE_LOG_MESSAGE("  |     Flags                              |");
+                WRITE_LOG_MESSAGE("  |                                          |");
+                WRITE_LOG_MESSAGE("  |   ---Type %02d---                          |", type);
+                WRITE_LOG_MESSAGE("  |     Flags                                |");
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags == 0) {
-                    WRITE_LOG_MESSAGE("  |        <No Flags>                      |");
+                    WRITE_LOG_MESSAGE("  |        <No Flags>                        |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
-                    WRITE_LOG_MESSAGE("  |        DEVICE_LOCAL                    |");
+                    WRITE_LOG_MESSAGE("  |        DEVICE_LOCAL                      |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-                    WRITE_LOG_MESSAGE("  |        HOST_VISIBLE                    |");
+                    WRITE_LOG_MESSAGE("  |        HOST_VISIBLE                      |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
-                    WRITE_LOG_MESSAGE("  |        HOST_COHERENT                   |");
+                    WRITE_LOG_MESSAGE("  |        HOST_COHERENT                     |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) {
-                    WRITE_LOG_MESSAGE("  |        HOST_CACHED                     |");
+                    WRITE_LOG_MESSAGE("  |        HOST_CACHED                       |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) {
-                    WRITE_LOG_MESSAGE("  |        LAZY_ALLOC                      |");
+                    WRITE_LOG_MESSAGE("  |        LAZY_ALLOC                        |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_PROTECTED_BIT) {
-                    WRITE_LOG_MESSAGE("  |        PROTECTED                       |");
+                    WRITE_LOG_MESSAGE("  |        PROTECTED                         |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags &
                     VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD) {
-                    WRITE_LOG_MESSAGE("  |        DEV_COHERENT_AMD                |");
+                    WRITE_LOG_MESSAGE("  |        DEV_COHERENT_AMD                  |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags &
                     VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD) {
-                    WRITE_LOG_MESSAGE("  |        DEV_UNCACHED_AMD                |");
+                    WRITE_LOG_MESSAGE("  |        DEV_UNCACHED_AMD                  |");
                 }
                 if (phys_dev_data_entry->memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_RDMA_CAPABLE_BIT_NV) {
-                    WRITE_LOG_MESSAGE("  |        RDMA_CAPABLE_NV                 |");
+                    WRITE_LOG_MESSAGE("  |        RDMA_CAPABLE_NV                   |");
                 }
                 bool printed_alloc = false;
                 for (auto &memory_data : g_memory_map) {
                     if (memory_data.second->alloc_info.memoryTypeIndex == type) {
-                        WRITE_LOG_MESSAGE("  |                                        |");
                         if (!printed_alloc) {
-                            WRITE_LOG_MESSAGE("  |     Allocated Memory                   |");
-                            WRITE_LOG_MESSAGE("  |     -------------------                |");
+                            WRITE_LOG_MESSAGE("  |                                          |");
+                            WRITE_LOG_MESSAGE("  |     Allocated Memory                     |");
+                            WRITE_LOG_MESSAGE("  |     -------------------                  |");
                             printed_alloc = true;
+                        } else {
+                            WRITE_LOG_MESSAGE("  |        -------                           |");
                         }
-                        WRITE_LOG_MESSAGE("  |        VkMemory %14" PRIx64 "         |",
+                        WRITE_LOG_MESSAGE("  |        VkMemory    %16" PRIx64 "      |",
                                           reinterpret_cast<uint64_t>(memory_data.first));
-                        WRITE_LOG_MESSAGE("  |          Size %10" PRIu64 "               |",
+                        WRITE_LOG_MESSAGE("  |          Size          %12" PRIu64 "      |",
                                           memory_data.second->alloc_info.allocationSize);
 
                         if (memory_data.second->additional_info.flags) {
                             if (memory_data.second->additional_info.flags & ADD_MEM_VALID_EXTERNAL_MEM_HANDLE_FLAGS) {
-                                WRITE_LOG_MESSAGE("  |          Ext_Mem_Flags 0x%08x     |",
+                                WRITE_LOG_MESSAGE("  |          Ext_Mem_Flags 0x%08x       |",
                                                   memory_data.second->additional_info.external_memory_handle_flags);
                             }
                             if (memory_data.second->additional_info.flags & ADD_MEM_VALID_DEDICATED_ALLOC) {
                                 if (VK_NULL_HANDLE != memory_data.second->additional_info.dedicated_image) {
                                     WRITE_LOG_MESSAGE(
-                                        "  |          Dedicated Img %14" PRIx64 "  |",
+                                        "  |          Dedic Img %16" PRIx64 "      |",
                                         reinterpret_cast<uint64_t>(memory_data.second->additional_info.dedicated_image));
                                 }
                                 if (VK_NULL_HANDLE != memory_data.second->additional_info.dedicated_buffer) {
                                     WRITE_LOG_MESSAGE(
-                                        "  |          Dedicated Buf %14" PRIx64 "  |",
+                                        "  |          Dedic Buf %16" PRIx64 "      |",
                                         reinterpret_cast<uint64_t>(memory_data.second->additional_info.dedicated_buffer));
                                 }
                             }
                             if (memory_data.second->additional_info.flags & ADD_MEM_VALID_OPAQUE_CAPTURE_ADDRESS) {
-                                WRITE_LOG_MESSAGE("  |          Opaque Capt Addr %14" PRIx64 "   |",
+                                WRITE_LOG_MESSAGE("  |          Opaque Capt Addr %16" PRIx64 "   |",
                                                   memory_data.second->additional_info.opaque_capture_address);
                             }
                             if (memory_data.second->additional_info.flags & ADD_MEM_VALID_EXTERNAL_MEM_FD) {
-                                WRITE_LOG_MESSAGE("  |          Extern Mem Fd HandleType 0x%08x   |",
+                                WRITE_LOG_MESSAGE("  |          Extern Mem Fd HandleType   0x%08x   |",
                                                   memory_data.second->additional_info.ext_memory_fd_handle_type);
-                                WRITE_LOG_MESSAGE("  |          Extern Mem Fd %14" PRIx64 "   |",
+                                WRITE_LOG_MESSAGE("  |          Extern Mem Fd %16" PRIx64 "   |",
                                                   memory_data.second->additional_info.ext_memory_fd);
+                                if (g_ext_mem_fd_map.find(memory_data.second->additional_info.ext_memory_fd) !=
+                                    g_ext_mem_fd_map.end()) {
+                                    ExternalMemFdMapStruct *ext_mem_fd_map_entry =
+                                        g_ext_mem_fd_map[memory_data.second->additional_info.ext_memory_fd];
+                                    WRITE_LOG_MESSAGE("  |             MemoryTypes     0x%08x   |",
+                                                      ext_mem_fd_map_entry->memory_type);
+                                }
                             }
                             if (memory_data.second->additional_info.flags & ADD_MEM_VALID_IMPORT_HOST_POINTER) {
-                                WRITE_LOG_MESSAGE("  |          Import Host Ptr HandleType 0x%08x   |",
+                                WRITE_LOG_MESSAGE("  |          Import Host Ptr HandleType    0x%08x   |",
                                                   memory_data.second->additional_info.import_host_ptr_handle_type);
-                                WRITE_LOG_MESSAGE("  |          Import Host Ptr %p   |",
+                                WRITE_LOG_MESSAGE("  |          Import Host Ptr %16p   |",
                                                   memory_data.second->additional_info.import_host_ptr);
                             }
                             if (memory_data.second->additional_info.flags & ADD_MEM_VALID_PRIORITY) {
-                                WRITE_LOG_MESSAGE("  |          Priority %10f              |",
+                                WRITE_LOG_MESSAGE("  |          Priority %10f                |",
                                                   memory_data.second->additional_info.memory_priority);
                             }
                             if (memory_data.second->additional_info.flags & ADD_MEM_VALID_ANDROID_HARDWARE_BUFFER) {
 #ifdef ANDROID
-                                WRITE_LOG_MESSAGE("  |          AHardwareBuffer %p   |",
-                                                  memory_data.second->additional_info.android_hw_buffer);
+                                AHardwareBuffer *android_hw_buf = memory_data.second->additional_info.android_hw_buffer;
+                                WRITE_LOG_MESSAGE("  |          AHardwareBuffer %16p   |", android_hw_buf);
+                                if (g_android_buf_map.find(android_hw_buf) != g_android_buf_map.end()) {
+                                    AndroidBufferMapStruct *and_hw_map_entry = g_android_buf_map[android_hw_buf];
+                                    WRITE_LOG_MESSAGE("  |             AllocSize      %12" PRIu64 "   |",
+                                                      and_hw_map_entry->alloc_size);
+                                    WRITE_LOG_MESSAGE("  |             MemoryTypes     0x%08x   |", and_hw_map_entry->memory_type);
+                                }
 #endif
                             }
                         }
-                        WRITE_LOG_MESSAGE("  |                                        |");
+                        WRITE_LOG_MESSAGE("  |                                          |");
                         bool printed_buffers = false;
                         for (auto &buffer : memory_data.second->buffers) {
                             if (!printed_buffers) {
-                                WRITE_LOG_MESSAGE("  |          Bound Buffers                 |");
-                                WRITE_LOG_MESSAGE("  |          .....................         |");
+                                WRITE_LOG_MESSAGE("  |          Bound Buffers                   |");
+                                WRITE_LOG_MESSAGE("  |          .....................           |");
                                 printed_buffers = true;
+                            } else {
+                                WRITE_LOG_MESSAGE("  |             ..........                   |");
                             }
-                            WRITE_LOG_MESSAGE("  |             VkBuffer %14" PRIx64 "    |",
+                            WRITE_LOG_MESSAGE("  |             VkBuffer %16" PRIx64 "    |",
                                               reinterpret_cast<uint64_t>(buffer.buffer));
-                            WRITE_LOG_MESSAGE("  |                 Size   %14" PRIu64 "  |",
+                            WRITE_LOG_MESSAGE("  |                 Size     %12" PRIu64 "    |",
                                               g_buffer_map[buffer.buffer]->memory_reqs.size);
-                            WRITE_LOG_MESSAGE("  |                 Align  %14" PRIu64 "  |",
+                            WRITE_LOG_MESSAGE("  |                 Align    %12" PRIu64 "    |",
                                               g_buffer_map[buffer.buffer]->memory_reqs.alignment);
-                            WRITE_LOG_MESSAGE("  |                 Offset %14" PRIu64 "  |", buffer.offset);
-                            WRITE_LOG_MESSAGE("  |                 Flags      0x%08x  |",
+                            WRITE_LOG_MESSAGE("  |                 Offset   %12" PRIu64 "    |", buffer.offset);
+                            WRITE_LOG_MESSAGE("  |                 Flags      0x%08x    |",
                                               g_buffer_map[buffer.buffer]->memory_reqs.memoryTypeBits);
                             if (g_buffer_map[buffer.buffer]->additional_info.flags) {
                                 if (g_buffer_map[buffer.buffer]->additional_info.flags & ADD_BUFFER_VALID_OPAQUE_CAPTURE) {
-                                    WRITE_LOG_MESSAGE("  |                 Opaque Capt Addr %14" PRIu64 " |",
+                                    WRITE_LOG_MESSAGE("  |                 Opaque Capt Addr %16" PRIu64 " |",
                                                       g_buffer_map[buffer.buffer]->additional_info.opaque_capture_address);
                                 }
                                 if (g_buffer_map[buffer.buffer]->additional_info.flags &
                                     ADD_BUFFER_VALID_EXTERNAL_MEM_HANDLE_FLAGS) {
-                                    WRITE_LOG_MESSAGE("  |                 Ext Mem Flags  0x%08x  |",
+                                    WRITE_LOG_MESSAGE("  |                 Ext Mem Flags    0x%08x  |",
                                                       g_buffer_map[buffer.buffer]->additional_info.external_memory_handle_flags);
                                 }
                                 if (g_buffer_map[buffer.buffer]->additional_info.flags & ADD_BUFFER_VALID_DEVICE_ADDRESS) {
-                                    WRITE_LOG_MESSAGE("  |                 Device Addr %14" PRIx64 " |",
+                                    WRITE_LOG_MESSAGE("  |                 Device Addr %16" PRIx64 " |",
                                                       g_buffer_map[buffer.buffer]->additional_info.device_address);
                                 }
                             }
@@ -478,83 +577,85 @@ void DumpMemory(DeviceMapStruct *device_map_data, PhysDeviceMapStruct *phys_dev_
                         bool printed_images = false;
                         for (auto &image : memory_data.second->images) {
                             if (!printed_images) {
-                                WRITE_LOG_MESSAGE("  |          Bound Images                  |");
-                                WRITE_LOG_MESSAGE("  |          .....................         |");
+                                WRITE_LOG_MESSAGE("  |          Bound Images                    |");
+                                WRITE_LOG_MESSAGE("  |          .....................           |");
                                 printed_images = true;
+                            } else {
+                                WRITE_LOG_MESSAGE("  |             ..........                   |");
                             }
-                            WRITE_LOG_MESSAGE("  |             VkImage %14" PRIx64 "     |",
+                            WRITE_LOG_MESSAGE("  |             VkImage  %16" PRIx64 "    |",
                                               reinterpret_cast<uint64_t>(image.image));
-                            WRITE_LOG_MESSAGE("  |                 Size   %14" PRIu64 "  |",
+                            WRITE_LOG_MESSAGE("  |                 Size     %12" PRIu64 "    |",
                                               g_image_map[image.image]->memory_reqs.size);
-                            WRITE_LOG_MESSAGE("  |                 Align  %14" PRIu64 "  |",
+                            WRITE_LOG_MESSAGE("  |                 Align    %12" PRIu64 "    |",
                                               g_image_map[image.image]->memory_reqs.alignment);
-                            WRITE_LOG_MESSAGE("  |                 Offset %14" PRIu64 "  |", image.offset);
-                            WRITE_LOG_MESSAGE("  |                 Flags      0x%08x  |",
+                            WRITE_LOG_MESSAGE("  |                 Offset   %12" PRIu64 "    |", image.offset);
+                            WRITE_LOG_MESSAGE("  |                 Flags      0x%08x    |",
                                               g_image_map[image.image]->memory_reqs.memoryTypeBits);
 
                             if (g_image_map[image.image]->additional_info.flags) {
                                 if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_EXTERNAL_MEM_HANDLE_FLAGS) {
-                                    WRITE_LOG_MESSAGE("  |                 Ext Mem Flags  0x%08x  |",
+                                    WRITE_LOG_MESSAGE("  |                 Ext Mem Flags    0x%08x  |",
                                                       g_image_map[image.image]->additional_info.external_memory_handle_flags);
                                 }
                                 if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_FORMAT_LIST) {
-                                    WRITE_LOG_MESSAGE("  |                 Valid Formats  0x%08x  |",
+                                    WRITE_LOG_MESSAGE("  |                 Valid Formats    0x%08x  |",
                                                       g_image_map[image.image]->additional_info.format_list[0]);
                                     for (uint32_t i = 1;
                                          i < static_cast<uint32_t>(g_image_map[image.image]->additional_info.format_list.size());
                                          ++i) {
-                                        WRITE_LOG_MESSAGE("  |                                0x%08x  |",
+                                        WRITE_LOG_MESSAGE("  |                                  0x%08x  |",
                                                           g_image_map[image.image]->additional_info.format_list[i]);
                                     }
                                 }
                                 if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_STENCIL_USAGE) {
-                                    WRITE_LOG_MESSAGE("  |                 Stencil Flags  0x%08x  |",
+                                    WRITE_LOG_MESSAGE("  |                 Stencil Flags    0x%08x  |",
                                                       g_image_map[image.image]->additional_info.stencil_usage);
                                 }
                                 if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_SWAPCHAIN) {
                                     WRITE_LOG_MESSAGE(
-                                        "  |                 Swapchain %14" PRIu64 " |",
+                                        "  |                 Swapchain %16" PRIu64 " |",
                                         reinterpret_cast<uint64_t>(g_image_map[image.image]->additional_info.swapchain));
                                 }
                                 if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_COMPRESSION_CONTROL) {
-                                    WRITE_LOG_MESSAGE("  |                 Compress Flags    0x%08x |",
+                                    WRITE_LOG_MESSAGE("  |                 Compress Flags      0x%08x |",
                                                       g_image_map[image.image]->additional_info.image_compress_flags);
-                                    WRITE_LOG_MESSAGE("  |                 Fixed Rate Flags  0x%08x |",
+                                    WRITE_LOG_MESSAGE("  |                 Fixed Rate Flags    0x%08x |",
                                                       g_image_map[image.image]->additional_info.fixed_rate_flags[0]);
                                     for (uint32_t i = 1; i < g_image_map[image.image]->additional_info.fixed_rate_flags.size();
                                          ++i) {
-                                        WRITE_LOG_MESSAGE("  |                                   0x%08x |",
+                                        WRITE_LOG_MESSAGE("  |                                     0x%08x |",
                                                           g_image_map[image.image]->additional_info.fixed_rate_flags[i]);
                                     }
                                 }
                                 if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_DRM_FORMAT_MOD_EXPLICIT) {
-                                    WRITE_LOG_MESSAGE("  |                 Drm Format Mod %14" PRIu64 " |",
+                                    WRITE_LOG_MESSAGE("  |                 Drm Format Mod %16" PRIu64 " |",
                                                       g_image_map[image.image]->additional_info.drm_format_modifier);
-                                    WRITE_LOG_MESSAGE("  |                 Drm Planes                      |");
+                                    WRITE_LOG_MESSAGE("  |                 Drm Planes                        |");
                                     for (uint32_t i = 1;
                                          i < static_cast<uint32_t>(
                                                  g_image_map[image.image]->additional_info.drm_format_modifiers.size());
                                          ++i) {
-                                        WRITE_LOG_MESSAGE("  |                           Offs   %14" PRIu64 " |",
+                                        WRITE_LOG_MESSAGE("  |                           Offs     %14" PRIu64 " |",
                                                           g_image_map[image.image]->additional_info.plane_layouts[i].offset);
-                                        WRITE_LOG_MESSAGE("  |                           Size   %14" PRIu64 " |",
+                                        WRITE_LOG_MESSAGE("  |                           Size     %14" PRIu64 " |",
                                                           g_image_map[image.image]->additional_info.plane_layouts[i].size);
                                     }
                                 }
                                 if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_DRM_FORMAT_MOD_LIST) {
-                                    WRITE_LOG_MESSAGE("  |                 Drm Format Mods %14" PRIu64 " |",
+                                    WRITE_LOG_MESSAGE("  |                 Drm Format Mods   %14" PRIu64 " |",
                                                       g_image_map[image.image]->additional_info.drm_format_modifiers[0]);
                                     for (uint32_t i = 1;
                                          i < static_cast<uint32_t>(
                                                  g_image_map[image.image]->additional_info.drm_format_modifiers.size());
                                          ++i) {
-                                        WRITE_LOG_MESSAGE("  |                                 %14" PRIu64 " |",
+                                        WRITE_LOG_MESSAGE("  |                                   %14" PRIu64 " |",
                                                           g_image_map[image.image]->additional_info.drm_format_modifiers[i]);
                                     }
                                 }
                                 if (g_image_map[image.image]->additional_info.flags & ADD_IMAGE_VALID_EXTERNAL_FORMAT_ANDROID) {
 #ifdef ANDROID
-                                    WRITE_LOG_MESSAGE("  |                 Ext Android Fmt %14" PRIx64 " |",
+                                    WRITE_LOG_MESSAGE("  |                 Ext Android Fmt   %14" PRIx64 " |",
                                                       g_image_map[image.image]->additional_info.external_android_format);
 #endif
                                 }
@@ -564,8 +665,8 @@ void DumpMemory(DeviceMapStruct *device_map_data, PhysDeviceMapStruct *phys_dev_
                 }
             }
         }
-        WRITE_LOG_MESSAGE("  |                                        |");
-        WRITE_LOG_MESSAGE("  -----------------------------------------");
+        WRITE_LOG_MESSAGE("  |                                          |");
+        WRITE_LOG_MESSAGE("  -------------------------------------------");
     }
 }
 
@@ -652,6 +753,8 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo *pCreat
                 instance_map_data->extension_enables.KHR_get_phys_dev_props2 = true;
             }
         }
+
+        std::unique_lock<std::mutex> lock(g_instance_mutex);
         g_instance_map[*pInstance] = instance_map_data;
     }
 
@@ -886,7 +989,6 @@ VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceExternalBufferProperties(VkPhysicalD
     InstanceMapStruct *instance_data_entry = GetInstanceMapEntry(phys_dev_data_entry->instance);
     instance_data_entry->dispatch_table->GetPhysicalDeviceExternalBufferProperties(physicalDevice, pExternalBufferInfo,
                                                                                    pExternalBufferProperties);
-    // TODO
 }
 
 // ------------------------- Device Functions --------------------------------------
@@ -988,6 +1090,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical_device, co
 
         DumpMemory(device_map_data, phys_dev_data_entry, device_map_data->extension_enables.EXT_mem_budget);
 
+        std::unique_lock<std::mutex> lock(phys_dev_data_entry->device_mutex);
         g_device_map[*pDevice] = device_map_data;
     }
 
@@ -999,6 +1102,14 @@ VKAPI_ATTR void VKAPI_CALL DestroyDevice(VkDevice device, const VkAllocationCall
     assert(device_map_data);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->DestroyDevice(device, pAllocator);
+
+    EraseExternalMemFdMapEntries(device);
+#ifdef ANDROID
+    EraseAndroidBufferMapEntries(device);
+#endif
+
+    PhysDeviceMapStruct *phys_dev_data_entry = GetPhysicalDeviceMapEntry(device_map_data->physical_device);
+    std::unique_lock<std::mutex> lock(phys_dev_data_entry->device_mutex);
     EraseDeviceMapEntry(device);
 }
 
@@ -1045,6 +1156,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateBuffer(VkDevice device, const VkBufferCreat
             next_struct = reinterpret_cast<const VkBaseInStructure *>(next_struct->pNext);
         }
 
+        std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
         g_buffer_map[*pBuffer] = buffer_map_data;
     }
     return result;
@@ -1055,6 +1167,8 @@ VKAPI_ATTR void VKAPI_CALL DestroyBuffer(VkDevice device, VkBuffer buffer, const
     assert(device_map_data);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->DestroyBuffer(device, buffer, pAllocator);
+
+    std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
     EraseBufferMapEntry(buffer);
 }
 
@@ -1143,6 +1257,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateImage(VkDevice device, const VkImageCreateI
             next_struct = reinterpret_cast<const VkBaseInStructure *>(next_struct->pNext);
         }
 
+        std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
         g_image_map[*pImage] = image_map_data;
     }
     return result;
@@ -1153,6 +1268,8 @@ VKAPI_ATTR void VKAPI_CALL DestroyImage(VkDevice device, VkImage image, const Vk
     assert(device_map_data);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->DestroyImage(device, image, pAllocator);
+
+    std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
     EraseImageMapEntry(image);
 }
 
@@ -1165,6 +1282,8 @@ VKAPI_ATTR void VKAPI_CALL GetBufferMemoryRequirements(VkDevice device, VkBuffer
     assert(buffer_map_data->device == device);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->GetBufferMemoryRequirements(device, buffer, pMemoryRequirements);
+
+    std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
     memcpy(&buffer_map_data->memory_reqs, pMemoryRequirements, sizeof(VkMemoryRequirements));
 }
 
@@ -1177,6 +1296,8 @@ VKAPI_ATTR void VKAPI_CALL GetBufferMemoryRequirements2(VkDevice device, const V
     assert(buffer_map_data->device == device);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->GetBufferMemoryRequirements2(device, pInfo, pMemoryRequirements);
+
+    std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
     memcpy(&buffer_map_data->memory_reqs, &pMemoryRequirements->memoryRequirements, sizeof(VkMemoryRequirements));
 }
 
@@ -1188,6 +1309,8 @@ VKAPI_ATTR void VKAPI_CALL GetImageMemoryRequirements(VkDevice device, VkImage i
     assert(image_map_data->device == device);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->GetImageMemoryRequirements(device, image, pMemoryRequirements);
+
+    std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
     memcpy(&image_map_data->memory_reqs, pMemoryRequirements, sizeof(VkMemoryRequirements));
 }
 
@@ -1200,6 +1323,8 @@ VKAPI_ATTR void VKAPI_CALL GetImageMemoryRequirements2(VkDevice device, const Vk
     assert(image_map_data->device == device);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->GetImageMemoryRequirements2(device, pInfo, pMemoryRequirements);
+
+    std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
     memcpy(&image_map_data->memory_reqs, &pMemoryRequirements->memoryRequirements, sizeof(VkMemoryRequirements));
 }
 
@@ -1209,7 +1334,6 @@ VKAPI_ATTR void VKAPI_CALL GetDeviceBufferMemoryRequirements(VkDevice device, co
     assert(device_map_data);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->GetDeviceBufferMemoryRequirements(device, pInfo, pMemoryRequirements);
-    // TODO: How to
 }
 
 VKAPI_ATTR void VKAPI_CALL GetDeviceImageMemoryRequirements(VkDevice device, const VkDeviceImageMemoryRequirements *pInfo,
@@ -1234,18 +1358,31 @@ VKAPI_ATTR VkResult VKAPI_CALL GetMemoryFdPropertiesKHR(VkDevice device, VkExter
     assert(device_map_data);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     VkResult result = pDisp->GetMemoryFdPropertiesKHR(device, handleType, fd, pMemoryFdProperties);
-    // TODO: How to
+    if (result == VK_SUCCESS && pMemoryFdProperties != nullptr) {
+        ExternalMemFdMapStruct *ext_mem_fd_map_data = new ExternalMemFdMapStruct;
+        memset(ext_mem_fd_map_data, 0, sizeof(ExternalMemFdMapStruct));
+        ext_mem_fd_map_data->device = device;
+        ext_mem_fd_map_data->memory_type = pMemoryFdProperties->memoryTypeBits;
+        g_ext_mem_fd_map[static_cast<uint64_t>(fd)] = ext_mem_fd_map_data;
+    }
     return result;
 }
 
 #ifdef ANDROID
-VKAPI_ATTR VkResult VKAPI_CALL GetAndroidHardwareBufferPropertiesANDROID(VkDevice device, const struct AHardwareBuffer *buffer,
+VKAPI_ATTR VkResult VKAPI_CALL GetAndroidHardwareBufferPropertiesANDROID(VkDevice device, const AHardwareBuffer *buffer,
                                                                          VkAndroidHardwareBufferPropertiesANDROID *pProperties) {
     DeviceMapStruct *device_map_data = GetDeviceMapEntry(device);
     assert(device_map_data);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     VkResult result = pDisp->GetAndroidHardwareBufferPropertiesANDROID(device, buffer, pProperties);
-    // TODO: How to
+    if (result == VK_SUCCESS && pProperties != nullptr) {
+        AndroidBufferMapStruct *and_buf_map_data = new AndroidBufferMapStruct;
+        memset(and_buf_map_data, 0, sizeof(AndroidBufferMapStruct));
+        and_buf_map_data->device = device;
+        and_buf_map_data->alloc_size = pProperties->allocationSize;
+        and_buf_map_data->memory_type = pProperties->memoryTypeBits;
+        g_android_buf_map[buffer] = and_buf_map_data;
+    }
     return result;
 }
 #endif  // ANDROID
@@ -1331,6 +1468,7 @@ VKAPI_ATTR VkResult VKAPI_CALL AllocateMemory(VkDevice device, const VkMemoryAll
             next_struct = reinterpret_cast<const VkBaseInStructure *>(next_struct->pNext);
         }
 
+        std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
         g_memory_map[*pMemory] = memory_map_data;
     }
     return result;
@@ -1341,6 +1479,8 @@ VKAPI_ATTR void VKAPI_CALL FreeMemory(VkDevice device, VkDeviceMemory memory, co
     assert(device_map_data);
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     pDisp->FreeMemory(device, memory, pAllocator);
+
+    std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
     EraseMemoryMapEntry(memory);
 }
 
@@ -1351,6 +1491,8 @@ VKAPI_ATTR VkResult VKAPI_CALL BindBufferMemory(VkDevice device, VkBuffer buffer
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     VkResult result = pDisp->BindBufferMemory(device, buffer, memory, memoryOffset);
     if (result == VK_SUCCESS && buffer != VK_NULL_HANDLE) {
+        std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
+
         // Make sure it's not associated with a memory allocation already
         for (auto &mem_map_iter : g_memory_map) {
             MemoryMapStruct *map = mem_map_iter.second;
@@ -1384,6 +1526,8 @@ VKAPI_ATTR VkResult VKAPI_CALL BindImageMemory(VkDevice device, VkImage image, V
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     VkResult result = pDisp->BindImageMemory(device, image, memory, memoryOffset);
     if (result == VK_SUCCESS && image != VK_NULL_HANDLE) {
+        std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
+
         // Make sure it's not associated with a memory allocation already
         for (auto &mem_map_iter : g_memory_map) {
             MemoryMapStruct *map = mem_map_iter.second;
@@ -1418,6 +1562,8 @@ VKAPI_ATTR VkResult VKAPI_CALL BindBufferMemory2(VkDevice device, uint32_t bindI
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     VkResult result = pDisp->BindBufferMemory2(device, bindInfoCount, pBindInfos);
     if (result == VK_SUCCESS) {
+        std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
+
         for (uint32_t buf = 0; buf < bindInfoCount; ++buf) {
             if (pBindInfos[buf].buffer != VK_NULL_HANDLE) {
                 // Make sure it's not associated with a memory allocation already
@@ -1455,6 +1601,8 @@ VKAPI_ATTR VkResult VKAPI_CALL BindImageMemory2(VkDevice device, uint32_t bindIn
     VkLayerDispatchTable *pDisp = device_map_data->dispatch_table;
     VkResult result = pDisp->BindImageMemory2(device, bindInfoCount, pBindInfos);
     if (result == VK_SUCCESS) {
+        std::unique_lock<std::mutex> lock(device_map_data->memory_mutex);
+
         for (uint32_t img = 0; img < bindInfoCount; ++img) {
             if (pBindInfos[img].image != VK_NULL_HANDLE) {
                 // Make sure it's not associated with a memory allocation already
@@ -1473,13 +1621,34 @@ VKAPI_ATTR VkResult VKAPI_CALL BindImageMemory2(VkDevice device, uint32_t bindIn
                     MemoryMapStruct *memory_map_data = GetMemoryMapEntry(pBindInfos[img].memory);
                     assert(memory_map_data->device == device);
                     ImageMemoryStruct image_data{pBindInfos[img].image, pBindInfos[img].memoryOffset};
+
+                    const VkBaseInStructure *next_struct = reinterpret_cast<const VkBaseInStructure *>(pBindInfos[img].pNext);
+                    while (next_struct != nullptr) {
+                        switch (next_struct->sType) {
+                            case VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO: {
+                                const VkBindImagePlaneMemoryInfo *ci =
+                                    reinterpret_cast<const VkBindImagePlaneMemoryInfo *>(next_struct);
+                                image_data.additional_info.flags |= ADD_IMAGE_MEM_VALID_PLANE_MEM;
+                                image_data.additional_info.plane_mem_aspect = ci->planeAspect;
+                                break;
+                            }
+                            case VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR: {
+                                const VkBindImageMemorySwapchainInfoKHR *ci =
+                                    reinterpret_cast<const VkBindImageMemorySwapchainInfoKHR *>(next_struct);
+                                image_data.additional_info.flags |= ADD_IMAGE_MEM_VALID_SWAPCHAIN;
+                                image_data.additional_info.swapchain = ci->swapchain;
+                                image_data.additional_info.swapchain_image_index = ci->imageIndex;
+                                break;
+                            }
+                            default:
+                                break;
+                        }
+                        next_struct = reinterpret_cast<const VkBaseInStructure *>(next_struct->pNext);
+                    }
+
                     memory_map_data->images.push_back(image_data);
                 }
             }
-#if 0   // Brainpain
-VkBindImageMemoryDeviceGroupInfo,
-VkBindImageMemorySwapchainInfoKHR, or VkBindImagePlaneMemoryInfo
-#endif  // Brainpain
         }
         device_map_data->memory_bindings_updated = true;
 
