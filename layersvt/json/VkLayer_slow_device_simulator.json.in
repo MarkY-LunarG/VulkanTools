@@ -1,0 +1,83 @@
+{
+    "file_format_version" : "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_LUNARG_slow_device_simulator",
+        "type": "GLOBAL",
+        "library_path": "@JSON_LIBRARY_PATH@",
+        "api_version": "@JSON_VERSION@",
+        "implementation_version": "1",
+        "description": "LunarG slow device simulator layer",
+        "introduction": "The slow device simulator layer slows down the response for VkFence calls.",
+        "url": "https://vulkan.lunarg.com/doc/sdk/latest/windows/slow_device_simulator_layer.html",
+        "platforms": [ "WINDOWS", "LINUX", "MACOS", "ANDROID" ],
+        "instance_extensions": [
+            {
+                "name": "VK_EXT_layer_settings",
+                "spec_version": "2"
+            }
+        ],
+        "device_extensions": [
+            {
+                "name": "VK_EXT_tooling_info",
+                "spec_version": "1",
+                "entrypoints": [
+                    "vkGetPhysicalDeviceToolPropertiesEXT"
+                ]
+            }
+        ],
+        "features": {
+            "settings": [
+                {
+                    "key": "fence_delay_type",
+                    "label": "Fence Delay Type",
+                    "description": "Specify the way to delay a fence",
+                    "type": "ENUM",
+                    "flags": [
+                        {
+                            "key": "none",
+                            "label": "Disabled",
+                            "description": "Disable the fence delay functionality"
+                        },
+                        {
+                            "key": "ms_from_trigger",
+                            "label": "Ms From Trigger",
+                            "description": "Wait x milliseconds from the event triggering the fence"
+                        },
+                        {
+                            "key": "ms_from_first_query",
+                            "label": "Ms From First Query",
+                            "description": "Wait x milliseconds from the first fence wait query"
+                        },
+                        {
+                            "key": "num_fail_waits",
+                            "label": "Number of Fail Waits",
+                            "description": "Indicate for x waits that fence is not ready before responding with success"
+                        }
+                    ],
+                    "default": "none"
+                },
+                {
+                    "key": "fence_delay_count",
+                    "label": "Fence Delay Count",
+                    "description": "The count to wait, based on fence_delay_type",
+                    "type": "INT",
+                    "default": 0,
+                    "range": {
+                        "min": 0
+                    }
+                },
+                {
+                    "key": "memory_percent",
+                    "label": "Memory Percent",
+                    "description": "The percentage of actual memory to report back up (<=100)",
+                    "type": "INT",
+                    "default": 100,
+                    "range": {
+                        "min": 1
+                    },
+                    "unit": "percent"
+                }
+            ]
+        }
+    }
+}

@@ -132,11 +132,22 @@ if(BUILD_SCREENSHOT)
     )
 endif()
 
+if (BUILD_SLOW_DEVICE_SIMULATOR)
+    add_library(VkLayer_slow_device_simulator MODULE)
+    target_sources(VkLayer_slow_device_simulator PRIVATE
+        slow_device_simulator.cpp
+        vk_layer_table.cpp
+        vk_layer_table.h
+        slow_device_simulator_layer.md
+        json/VkLayer_slow_device_simulator.json.in
+    )
+endif()
+
 if (BUILD_TESTS_DEBUG)
     add_subdirectory(test)
 endif()
 
-list(APPEND TOOL_LAYERS "VkLayer_api_dump" "VkLayer_screenshot" "VkLayer_monitor")
+list(APPEND TOOL_LAYERS "VkLayer_api_dump" "VkLayer_screenshot" "VkLayer_monitor" "VkLayer_slow_device_simulator")
 foreach(layer ${TOOL_LAYERS})
     if (NOT TARGET "${layer}")
         continue()

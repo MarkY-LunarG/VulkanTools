@@ -33,6 +33,8 @@ if (MSVC)
     add_link_options("$<$<CONFIG:Release>:/DEBUG:FULL>")
 endif()
 
+option(BUILD_SLOW_DEVICE_SIMULATOR "Build slow device simulator layer" OFF)
+
 if (CMAKE_SYSTEM_NAME MATCHES "Windows|Linux|BSD")
 
     option(BUILD_APIDUMP "Build api_dump layer" ON)
@@ -86,7 +88,7 @@ if(BUILD_VIA)
     add_subdirectory(via)
 endif()
 
-if(BUILD_APIDUMP OR BUILD_MONITOR OR BUILD_SCREENSHOT)
+if(BUILD_APIDUMP OR BUILD_MONITOR OR BUILD_SCREENSHOT OR BUILD_SLOW_DEVICE_SIMULATOR)
     add_subdirectory(layersvt)
 endif()
 
