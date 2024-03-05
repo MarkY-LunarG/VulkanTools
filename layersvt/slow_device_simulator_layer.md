@@ -69,8 +69,6 @@ To force the layer to be enabled for Vulkan applications, you can set the
 
     export VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_slow_device_simulator
 
-<br></br>
-
 ### Android
 
 #### Globally Enabling the Layer
@@ -82,8 +80,6 @@ Use ADB to enable the layer for your project by:
 When done, disable the layer using:
 
     adb shell "setprop debug.vulkan.layers ''"
-
-<br></br>
 
 ### Applying Environment Settings on Android
 
@@ -106,8 +102,6 @@ set the following property:
 Which you can set in the following way:
 
     adb shell "setprop debug.slowdevicesim_memory_percent '80'"
-
-<br></br>
 
 
 ## Layer Options

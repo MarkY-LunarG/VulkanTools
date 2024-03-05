@@ -24,14 +24,20 @@ Note that some layers are code-generated and will therefore exist in the directo
 -include/vkLayer.h  - header file for layer code.
 
 ### Print API Calls and Parameter Values
-(build dir)/layers/api_dump.cpp (name=VK_LAYER_LUNARG_api_dump) - print out API calls along with parameter values
+(build dir)/layers/api_dump.cpp (name=`VK_LAYER_LUNARG_api_dump`) - print out API calls along with parameter values
 
 ### Capture Screenshots
-layersvt/screenshot.cpp (name='VK_LAYER_LUNARG_screenshot') - utility layer used to capture and save screenshots of running applications. 
+layersvt/screenshot.cpp (name=`VK_LAYER_LUNARG_screenshot`) - utility layer used to capture and save screenshots of running applications. 
 To specify frames to be captured, the environment variable 'VK_SCREENSHOT_FRAMES' can be set to a comma-separated list of frame numbers (ex: 4,8,15,16,23,42).
 
 ### View Frames Per Second
-layersvt/monitor.cpp - utility layer that will display an applications FPS in the title bar of a windowed application.
+layersvt/monitor.cpp (name=`VK_LAYER_LUNARG_monitor`) - utility layer that will display an applications FPS in the title bar of a windowed application.
+
+### Slow Down Device Responses
+layersvt/slow_device_simulator.cpp (name=`VK_LAYER_LUNARG_slow_device_simulator`) - utility layer which slows down responses to fence waits
+and reduces the amount of total memory exposed by a device to the application.
+
+See the [Slow Device Simulator layer doc](slow_device_simulator_layer.md) for more info.
 
 ## Using Layers
 
